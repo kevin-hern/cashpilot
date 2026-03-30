@@ -6,11 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Build context is the repo root — requirements.txt lives in backend/
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY backend/ .
 
 EXPOSE 8000
-# Shell form so $PORT is expanded at runtime (Railway injects it)
+# Use $PORT injected by Railway; fall back to 8000 for local docker run
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
