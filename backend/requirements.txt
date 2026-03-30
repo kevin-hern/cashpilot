@@ -1,0 +1,33 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# Database
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+alembic==1.13.3
+
+# Settings & validation
+pydantic==2.9.2
+pydantic-settings==2.5.2
+pydantic[email]==2.9.2
+
+# Auth
+PyJWT==2.9.0
+bcrypt==4.2.0
+cryptography==43.0.1
+
+# Plaid
+plaid-python==25.1.0
+
+# AI
+anthropic==0.34.2
+
+# Redis / task queue
+redis==5.1.1
+celery==5.4.0
+
+# Utilities
+httpx==0.27.2
+python-dotenv==1.0.1

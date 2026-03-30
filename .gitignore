@@ -1,5 +1,32 @@
-node_modules/
-.env
+# Python
 __pycache__/
-.DS_Store
+*.py[cod]
+*.egg-info/
 venv/
+.venv/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Postgres
+*.sql.bak
+
+# Logs
+*.log
