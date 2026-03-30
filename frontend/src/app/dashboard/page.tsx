@@ -85,6 +85,7 @@ export default function DashboardPage() {
     setSyncing(true)
     try {
       await Promise.all(items.map((item) => api.syncTransactions(item.id)))
+      await api.reclassifyTransactions()
       await loadData()
     } catch {
       // errors surfaced via loadData

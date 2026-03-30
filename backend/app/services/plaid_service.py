@@ -29,6 +29,10 @@ from app.core.config import settings
 from app.models.user_model import User
 from app.models.plaid_model import PlaidItem, Account, AccountBalance
 from app.models.transaction_model import Transaction, FinancialState
+from app.models.paycheck_model import Paycheck
+from app.services.classification_service import (
+    normalize_category, is_paycheck, extract_payroll_source, detect_pay_frequency,
+)
 from app.schemas.plaid_schema import (
     LinkTokenResponse, ExchangeRequest, ExchangeResponse, PlaidWebhookPayload
 )
@@ -195,14 +199,27 @@ class PlaidService:
 
         # Upsert transactions
         account_map = {plaid_id: acct.id for plaid_id, acct in db_accounts.items()}
+        new_txns: list[Transaction] = []
         for raw in added:
+            raw_name = raw.get("name")
+            merchant_name = raw.get("merchant_name")
+            plaid_cat = raw.get("personal_finance_category", {}).get("primary")
+            amount = raw["amount"]
+
+            # Normalize category — fixes GUSTO/ADP mis-classified as RENT_AND_UTILITIES
+            corrected_category = normalize_category(raw_name, merchant_name, plaid_cat, amount)
+
             existing = await self.db.execute(
                 select(Transaction).where(Transaction.plaid_transaction_id == raw["transaction_id"])
             )
             txn = existing.scalar_one_or_none()
             if txn:
                 txn.pending = raw["pending"]
-                txn.amount = raw["amount"]
+                txn.amount = amount
+                # Re-apply classification on update too
+                txn.category_primary = normalize_category(
+                    txn.raw_name, txn.merchant_name, txn.category_primary, float(txn.amount)
+                )
             else:
                 internal_acct_id = account_map.get(raw["account_id"])
                 if not internal_acct_id:
@@ -211,11 +228,11 @@ class PlaidService:
                     user_id=user_id,
                     account_id=internal_acct_id,
                     plaid_transaction_id=raw["transaction_id"],
-                    amount=raw["amount"],
+                    amount=amount,
                     currency=raw.get("iso_currency_code", "USD"),
-                    merchant_name=raw.get("merchant_name"),
-                    raw_name=raw.get("name"),
-                    category_primary=raw.get("personal_finance_category", {}).get("primary"),
+                    merchant_name=merchant_name,
+                    raw_name=raw_name,
+                    category_primary=corrected_category,
                     category_detailed=raw.get("personal_finance_category", {}).get("detailed"),
                     payment_channel=raw.get("payment_channel"),
                     pending=raw.get("pending", False),
@@ -223,15 +240,31 @@ class PlaidService:
                     metadata_={"plaid_raw": {}},
                 )
                 self.db.add(txn)
+                new_txns.append(txn)
+
+        await self.db.flush()
+
+        # Upsert Paycheck records for newly detected paychecks
+        for txn in new_txns:
+            if is_paycheck(float(txn.amount), txn.category_primary, txn.raw_name, txn.merchant_name):
+                existing_pc = await self.db.execute(
+                    select(Paycheck).where(Paycheck.transaction_id == txn.id)
+                )
+                if not existing_pc.scalar_one_or_none():
+                    self.db.add(Paycheck(
+                        user_id=user_id,
+                        transaction_id=txn.id,
+                        amount=abs(float(txn.amount)),
+                        source=extract_payroll_source(txn.raw_name, txn.merchant_name),
+                    ))
 
         await self.db.flush()
         await self._recalculate_financial_state(user_id, db_accounts)
 
     async def _recalculate_financial_state(self, user_id: uuid.UUID, db_accounts: dict) -> None:
         from datetime import datetime, timedelta
-        from sqlalchemy import func as sqlfunc
 
-        # Total liquid balance = sum of latest current balance for depository accounts
+        # ── Liquid balance ────────────────────────────────────────────────────
         depository_ids = [a.id for a in db_accounts.values() if "depository" in a.type]
         liquid = 0.0
         for acct_id in depository_ids:
@@ -245,19 +278,58 @@ class PlaidService:
             if val is not None:
                 liquid += float(val)
 
-        # Monthly income/expenses from last 30 days of non-pending transactions
+        # ── Income & expenses (last 30 days, non-pending) ─────────────────────
+        # Fetch full transaction rows so we can apply category-aware income logic.
+        # Income rule:
+        #   - amount < 0  (standard Plaid credit/income)
+        #   - OR category_primary == "INCOME" (handles Plaid sandbox edge cases
+        #     where payroll arrives as positive amount but correctly categorized)
+        # Expense rule:
+        #   - amount > 0 AND category_primary not in ("INCOME")
+        #   This prevents mis-categorized payroll from inflating expenses.
         cutoff = datetime.now(timezone.utc).date() - timedelta(days=30)
         txn_result = await self.db.execute(
-            select(Transaction.amount)
-            .where(Transaction.user_id == user_id, Transaction.pending == False, Transaction.posted_at >= cutoff)
+            select(Transaction)
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.pending == False,
+                Transaction.posted_at >= cutoff,
+            )
         )
-        amounts = [float(r) for r in txn_result.scalars().all()]
-        # In Plaid: positive amount = debit (expense), negative amount = credit (income)
-        monthly_expenses = sum(a for a in amounts if a > 0)
-        monthly_income = sum(-a for a in amounts if a < 0)
+        transactions = txn_result.scalars().all()
+
+        monthly_income = 0.0
+        monthly_expenses = 0.0
+        for txn in transactions:
+            amt = float(txn.amount)
+            is_income = (amt < 0) or (txn.category_primary == "INCOME")
+            if is_income:
+                monthly_income += abs(amt)
+            elif amt > 0:
+                monthly_expenses += amt
 
         emergency_score = (liquid / monthly_expenses) if monthly_expenses > 0 else None
 
+        # ── Paycheck-derived fields ───────────────────────────────────────────
+        pc_result = await self.db.execute(
+            select(Paycheck)
+            .where(Paycheck.user_id == user_id)
+            .order_by(Paycheck.detected_at.desc())
+            .limit(12)
+        )
+        paychecks = pc_result.scalars().all()
+        last_paycheck_amount = float(paychecks[0].amount) if paychecks else None
+        pay_frequency = None
+        if len(paychecks) >= 2:
+            # fetch posted_at from linked transactions
+            txn_ids = [p.transaction_id for p in paychecks]
+            dates_result = await self.db.execute(
+                select(Transaction.posted_at).where(Transaction.id.in_(txn_ids))
+            )
+            pay_dates = [r for r in dates_result.scalars().all()]
+            pay_frequency = detect_pay_frequency(pay_dates)
+
+        # ── Upsert FinancialState ─────────────────────────────────────────────
         state_result = await self.db.execute(
             select(FinancialState).where(FinancialState.user_id == user_id)
         )
@@ -267,6 +339,8 @@ class PlaidService:
             state.monthly_income_est = monthly_income or None
             state.monthly_expenses_est = monthly_expenses or None
             state.emergency_fund_score = emergency_score
+            state.last_paycheck_amount = last_paycheck_amount
+            state.pay_frequency = pay_frequency
         else:
             state = FinancialState(
                 user_id=user_id,
@@ -274,6 +348,8 @@ class PlaidService:
                 monthly_income_est=monthly_income or None,
                 monthly_expenses_est=monthly_expenses or None,
                 emergency_fund_score=emergency_score,
+                last_paycheck_amount=last_paycheck_amount,
+                pay_frequency=pay_frequency,
             )
             self.db.add(state)
 

@@ -1,5 +1,15 @@
 from pydantic_settings import BaseSettings
 from typing import List
+import json
+
+
+def _parse_cors(raw: str) -> List[str]:
+    """Accept JSON array or comma-separated string — handles both .env style and
+    plain Railway/Vercel environment variable panel values."""
+    raw = raw.strip()
+    if raw.startswith("["):
+        return json.loads(raw)
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 class Settings(BaseSettings):
@@ -28,16 +38,21 @@ class Settings(BaseSettings):
     # AES-256 hex key for encrypting Plaid access tokens (64 hex chars = 32 bytes)
     ENCRYPTION_KEY: str = "0000000000000000000000000000000000000000000000000000000000000000"
 
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    # CORS: stored as a plain string so pydantic-settings never tries to JSON-decode
+    # it. Supports both formats:
+    #   JSON:  CORS_ORIGINS=["https://cashpilot.vercel.app","http://localhost:3000"]
+    #   Plain: CORS_ORIGINS=https://cashpilot.vercel.app,http://localhost:3000
+    CORS_ORIGINS: str = "http://localhost:3000"
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return _parse_cors(self.CORS_ORIGINS)
 
     # Approval settings
     INTENT_EXPIRY_HOURS: int = 48
     REAUTH_THRESHOLD_DOLLARS: float = 0.01
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = {"env_file": ".env", "case_sensitive": True}
 
 
 settings = Settings()

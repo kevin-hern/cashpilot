@@ -5,6 +5,7 @@ from app.models.transaction_model import Transaction, FinancialEvent, FinancialS
 from app.models.intent_model import Intent, ApprovalAction, Execution
 from app.models.audit_model import AuditLog
 from app.models.chat_model import ChatSession, ChatMessage
+from app.models.paycheck_model import Paycheck
 
 __all__ = [
     "User",
@@ -13,4 +14,5 @@ __all__ = [
     "Intent", "ApprovalAction", "Execution",
     "AuditLog",
     "ChatSession", "ChatMessage",
+    "Paycheck",
 ]

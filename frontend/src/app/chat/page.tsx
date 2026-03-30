@@ -1,11 +1,163 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { api, streamChat } from "@/lib/api-client"
 
 interface Message {
   role: "user" | "assistant"
   content: string
+}
+
+interface Intent {
+  type: string
+  title: string
+  explanation: string
+  amount: number | null
+  confidence: number
+}
+
+type Segment =
+  | { kind: "text"; content: string }
+  | { kind: "intent"; data: Intent }
+
+function parseSegments(raw: string): Segment[] {
+  const segments: Segment[] = []
+  const regex = /<intent>([\s\S]*?)<\/intent>/g
+  let cursor = 0
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(raw)) !== null) {
+    if (match.index > cursor) {
+      const text = raw.slice(cursor, match.index).trim()
+      if (text) segments.push({ kind: "text", content: text })
+    }
+    try {
+      const data = JSON.parse(match[1].trim()) as Intent
+      segments.push({ kind: "intent", data })
+    } catch {
+      segments.push({ kind: "text", content: match[0] })
+    }
+    cursor = match.index + match[0].length
+  }
+
+  const remaining = raw.slice(cursor).trim()
+  if (remaining) segments.push({ kind: "text", content: remaining })
+
+  return segments
+}
+
+const INTENT_ICONS: Record<string, string> = {
+  transfer_to_savings: "→",
+  pay_bill: "📄",
+  invest: "📈",
+  alert: "⚠",
+  suggestion: "💡",
+}
+
+type ApproveStatus = "idle" | "loading" | "approved" | "error"
+
+function IntentCard({ data }: { data: Intent }) {
+  const [status, setStatus] = useState<ApproveStatus>("idle")
+  const [errorMsg, setErrorMsg] = useState("")
+  const icon = INTENT_ICONS[data.type] ?? "💡"
+  const confidencePct = Math.round((data.confidence ?? 0) * 100)
+
+  async function handleApprove() {
+    setStatus("loading")
+    setErrorMsg("")
+    try {
+      await api.approveChatIntent({
+        intent_type: data.type,
+        title: data.title,
+        explanation: data.explanation,
+        amount: data.amount,
+        confidence: data.confidence,
+        idempotency_key: crypto.randomUUID(),
+      })
+      setStatus("approved")
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Approval failed")
+      setStatus("error")
+    }
+  }
+
+  return (
+    <div className={`mt-3 rounded-xl border p-4 transition-colors ${
+      status === "approved"
+        ? "border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950"
+        : "border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800"
+    }`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-base leading-none">{icon}</span>
+            <span className="text-sm font-semibold text-zinc-900 dark:text-white">{data.title}</span>
+          </div>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">{data.explanation}</p>
+          <div className="flex items-center gap-3 text-xs text-zinc-400">
+            {data.amount != null && (
+              <span className="font-medium text-zinc-600 dark:text-zinc-300">
+                ${Math.abs(data.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+              </span>
+            )}
+            <span>{confidencePct}% confidence</span>
+          </div>
+          {status === "error" && (
+            <p className="mt-1.5 text-xs text-red-500">{errorMsg}</p>
+          )}
+        </div>
+
+        {status === "approved" ? (
+          <span className="shrink-0 flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            Approved
+          </span>
+        ) : (
+          <button
+            onClick={handleApprove}
+            disabled={status === "loading"}
+            className="shrink-0 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-zinc-700 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+          >
+            {status === "loading" ? "Approving…" : "Approve"}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AssistantContent({ content, streaming }: { content: string; streaming: boolean }) {
+  if (!content) {
+    return streaming ? <span className="animate-pulse text-zinc-400">…</span> : null
+  }
+
+  const segments = parseSegments(content)
+
+  return (
+    <div className="space-y-1">
+      {segments.map((seg, i) => {
+        if (seg.kind === "intent") {
+          return (
+            <IntentCard
+              key={i}
+              data={seg.data}
+            />
+          )
+        }
+        return (
+          <div key={i} className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-table:text-xs">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {seg.content}
+            </ReactMarkdown>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export default function ChatPage() {
@@ -69,13 +221,18 @@ export default function ChatPage() {
         )}
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-sm rounded-2xl px-4 py-2.5 text-sm ${
-              msg.role === "user"
-                ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
-                : "bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-white"
-            }`}>
-              {msg.content || (streaming && msg.role === "assistant" ? <span className="animate-pulse">…</span> : "")}
-            </div>
+            {msg.role === "user" ? (
+              <div className="max-w-sm rounded-2xl px-4 py-2.5 text-sm bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
+                {msg.content}
+              </div>
+            ) : (
+              <div className="max-w-prose w-full rounded-2xl px-4 py-3 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-white">
+                <AssistantContent
+                  content={msg.content}
+                  streaming={streaming && i === messages.length - 1}
+                />
+              </div>
+            )}
           </div>
         ))}
         <div ref={bottomRef} />

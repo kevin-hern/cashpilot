@@ -25,13 +25,20 @@ class ApprovalService:
         self.db = db
         self.audit = AuditService(db)
 
-    async def list_pending(self, user_id: uuid.UUID) -> list[Intent]:
-        result = await self.db.execute(
-            select(Intent)
-            .where(Intent.user_id == user_id, Intent.status == "pending_approval")
-            .order_by(Intent.created_at.desc())
-        )
+    async def list_intents(
+        self,
+        user_id: uuid.UUID,
+        statuses: list[str] | None = None,
+    ) -> list[Intent]:
+        query = select(Intent).where(Intent.user_id == user_id)
+        if statuses:
+            query = query.where(Intent.status.in_(statuses))
+        query = query.order_by(Intent.created_at.desc()).limit(100)
+        result = await self.db.execute(query)
         return result.scalars().all()
+
+    async def list_pending(self, user_id: uuid.UUID) -> list[Intent]:
+        return await self.list_intents(user_id, statuses=["pending_approval"])
 
     async def get_intent(self, user_id: uuid.UUID, intent_id: uuid.UUID) -> Intent | None:
         result = await self.db.execute(

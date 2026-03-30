@@ -57,6 +57,15 @@ export const api = {
   syncTransactions: (itemId: string) =>
     request(`/api/v1/plaid/sync/${itemId}`, { method: "POST" }),
 
+  reclassifyTransactions: () =>
+    request<{
+      reclassified: number
+      paychecks_created: number
+      monthly_income_est: number
+      monthly_expenses_est: number
+      total_liquid_balance: number
+    }>("/api/v1/transactions/reclassify", { method: "POST" }),
+
   // ── Accounts ──────────────────────────────────────────────────────────────
   getAccounts: () =>
     request<Array<{
@@ -82,7 +91,34 @@ export const api = {
     }>("/api/v1/transactions/state"),
 
   // ── Approvals ─────────────────────────────────────────────────────────────
-  getPendingApprovals: () => request<unknown[]>("/api/v1/approvals"),
+  getPendingApprovals: () => request<unknown[]>("/api/v1/approvals?status=pending_approval"),
+
+  getApprovals: (status?: string) =>
+    request<Array<{
+      id: string
+      intent_type: string
+      status: string
+      title: string
+      explanation: string
+      amount: number | null
+      confidence_score: number | null
+      generated_by: string
+      expires_at: string | null
+      created_at: string
+    }>>(`/api/v1/approvals${status ? `?status=${status}` : ""}`),
+
+  approveChatIntent: (body: {
+    intent_type: string
+    title: string
+    explanation: string
+    amount: number | null
+    confidence: number | null
+    idempotency_key: string
+  }) =>
+    request<{ id: string; status: string; provider_txn_id: string | null }>("/api/v1/approvals/", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   approveIntent: (intentId: string, idempotencyKey: string) =>
     request(`/api/v1/approvals/${intentId}/approve`, {
