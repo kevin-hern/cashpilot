@@ -38,14 +38,13 @@ class Settings(BaseSettings):
     # AES-256 hex key for encrypting Plaid access tokens (64 hex chars = 32 bytes)
     ENCRYPTION_KEY: str = "0000000000000000000000000000000000000000000000000000000000000000"
 
-    # CORS: stored as a plain string so pydantic-settings never tries to JSON-decode
-    # it. Supports both formats:
-    #   JSON:  CORS_ORIGINS=["https://cashpilot.vercel.app","http://localhost:3000"]
-    #   Plain: CORS_ORIGINS=https://cashpilot.vercel.app,http://localhost:3000
-    CORS_ORIGINS: str = "http://localhost:3000"
+    # CORS: "*" allows all origins. Supports comma-separated or JSON array.
+    CORS_ORIGINS: str = "*"
 
     @property
     def cors_origins_list(self) -> List[str]:
+        if self.CORS_ORIGINS.strip() == "*":
+            return ["*"]
         return _parse_cors(self.CORS_ORIGINS)
 
     # Approval settings
