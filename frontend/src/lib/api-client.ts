@@ -1,5 +1,13 @@
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
+// Debug: log which API URL is active (visible in browser console)
+if (typeof window !== "undefined") {
+  console.log("[CashPilot] API base URL:", BASE_URL)
+  if (!process.env.NEXT_PUBLIC_API_URL) {
+    console.warn("[CashPilot] NEXT_PUBLIC_API_URL is not set — falling back to localhost. Set it in Vercel project settings.")
+  }
+}
+
 function getToken(): string | null {
   if (typeof window === "undefined") return null
   return localStorage.getItem("access_token")
