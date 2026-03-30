@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.database import engine, Base
 from app.routers import auth, plaid, transactions, decisions, approvals, chat, audit
+from app.routers import accounts
 
 
 @asynccontextmanager
@@ -37,6 +38,7 @@ app.include_router(decisions.router,    prefix="/api/v1/decisions",    tags=["De
 app.include_router(approvals.router,    prefix="/api/v1/approvals",    tags=["Approvals"])
 app.include_router(chat.router,         prefix="/api/v1/chat",         tags=["Chat"])
 app.include_router(audit.router,        prefix="/api/v1/audit",        tags=["Audit"])
+app.include_router(accounts.router,     prefix="/api/v1/accounts",     tags=["Accounts"])
 
 
 @app.get("/health", tags=["Health"])

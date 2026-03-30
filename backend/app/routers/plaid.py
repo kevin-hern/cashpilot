@@ -53,7 +53,7 @@ async def unlink_item(
     await svc.unlink_item(current_user.id, item_id)
 
 
-@router.post("/sync/{item_id}", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/sync/{item_id}", status_code=status.HTTP_200_OK)
 async def manual_sync(
     item_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
@@ -61,7 +61,8 @@ async def manual_sync(
 ):
     svc = PlaidService(db)
     await svc.trigger_sync(current_user.id, item_id)
-    return {"message": "Sync enqueued"}
+    await db.commit()
+    return {"message": "Sync complete"}
 
 
 @router.post("/webhook", status_code=status.HTTP_200_OK)

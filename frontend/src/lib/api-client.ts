@@ -34,23 +34,55 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  // ── Auth ──────────────────────────────────────────────────────────────────
   login: (body: { email: string; password: string }) =>
     request<{ access_token: string; refresh_token: string }>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
+  register: (body: { email: string; password: string; full_name?: string }) =>
+    request("/api/v1/auth/register", { method: "POST", body: JSON.stringify(body) }),
+
+  // ── Plaid ─────────────────────────────────────────────────────────────────
   getLinkToken: () =>
     request<{ link_token: string }>("/api/v1/plaid/link-token", { method: "POST" }),
 
   exchangePublicToken: (body: { public_token: string; institution_name?: string }) =>
     request("/api/v1/plaid/exchange", { method: "POST", body: JSON.stringify(body) }),
 
-  getAccounts: () => request("/api/v1/accounts"),
+  getPlaidItems: () =>
+    request<Array<{ id: string; institution_name: string | null; status: string; last_synced_at: string | null }>>("/api/v1/plaid/items"),
 
-  getFinancialState: () => request("/api/v1/transactions/state"),
+  syncTransactions: (itemId: string) =>
+    request(`/api/v1/plaid/sync/${itemId}`, { method: "POST" }),
 
-  getPendingApprovals: () => request("/api/v1/approvals"),
+  // ── Accounts ──────────────────────────────────────────────────────────────
+  getAccounts: () =>
+    request<Array<{
+      id: string
+      name: string
+      official_name: string | null
+      type: string
+      subtype: string | null
+      current_balance: number | null
+      available_balance: number | null
+      plaid_item_id: string
+    }>>("/api/v1/accounts/"),
+
+  // ── Transactions & State ──────────────────────────────────────────────────
+  getFinancialState: () =>
+    request<{
+      total_liquid_balance: number
+      monthly_income_est: number | null
+      monthly_expenses_est: number | null
+      last_paycheck_amount: number | null
+      pay_frequency: string | null
+      emergency_fund_score: number | null
+    }>("/api/v1/transactions/state"),
+
+  // ── Approvals ─────────────────────────────────────────────────────────────
+  getPendingApprovals: () => request<unknown[]>("/api/v1/approvals"),
 
   approveIntent: (intentId: string, idempotencyKey: string) =>
     request(`/api/v1/approvals/${intentId}/approve`, {
@@ -64,8 +96,14 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
+  // ── Chat ──────────────────────────────────────────────────────────────────
   createChatSession: () =>
     request<{ id: string }>("/api/v1/chat/sessions", { method: "POST" }),
+
+  getChatSessions: () => request("/api/v1/chat/sessions"),
+
+  getChatMessages: (sessionId: string) =>
+    request(`/api/v1/chat/sessions/${sessionId}/messages`),
 }
 
 export function streamChat(

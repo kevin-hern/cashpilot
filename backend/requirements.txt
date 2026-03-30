@@ -19,7 +19,7 @@ bcrypt==4.2.0
 cryptography==43.0.1
 
 # Plaid
-plaid-python==25.1.0
+plaid-python==38.4.0
 
 # AI
 anthropic==0.34.2

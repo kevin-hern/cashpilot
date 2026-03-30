@@ -13,9 +13,11 @@ import uuid
 from app.core.config import settings
 from app.models.chat_model import ChatSession, ChatMessage
 from app.models.user_model import User
+from app.models.plaid_model import Account, AccountBalance
+from app.models.transaction_model import Transaction, FinancialState
 
 
-SYSTEM_PROMPT = """You are CashPilot, an AI financial assistant. You help users understand their spending, detect income patterns, and make smart financial decisions.
+BASE_SYSTEM_PROMPT = """You are CashPilot, an AI financial assistant. You help users understand their spending, detect income patterns, and make smart financial decisions.
 
 Your role:
 - Analyze financial data provided in context
@@ -79,6 +81,81 @@ class LLMService:
         if session:
             await self.db.delete(session)
 
+    async def _build_financial_context(self, user_id: uuid.UUID) -> str:
+        from datetime import datetime, timedelta, timezone
+
+        lines: list[str] = ["## User Financial Context\n"]
+
+        # ── Accounts & balances ───────────────────────────────────────────────
+        acct_result = await self.db.execute(
+            select(Account).where(Account.user_id == user_id)
+        )
+        accounts = acct_result.scalars().all()
+
+        if accounts:
+            lines.append("### Accounts")
+            for acct in accounts:
+                bal_result = await self.db.execute(
+                    select(AccountBalance)
+                    .where(AccountBalance.account_id == acct.id)
+                    .order_by(AccountBalance.snapshot_at.desc())
+                    .limit(1)
+                )
+                bal = bal_result.scalar_one_or_none()
+                current = f"${float(bal.current):,.2f}" if bal else "unknown"
+                available = (
+                    f" (${float(bal.available):,.2f} available)" if bal and bal.available is not None else ""
+                )
+                label = acct.official_name or acct.name
+                lines.append(f"- {label} [{acct.type}/{acct.subtype or '—'}]: {current}{available}")
+        else:
+            lines.append("### Accounts\n- No accounts linked.")
+
+        # ── Financial state ───────────────────────────────────────────────────
+        state_result = await self.db.execute(
+            select(FinancialState).where(FinancialState.user_id == user_id)
+        )
+        state = state_result.scalar_one_or_none()
+
+        lines.append("\n### Financial Summary")
+        if state:
+            def fmt(v): return f"${float(v):,.2f}" if v is not None else "unknown"
+            lines.append(f"- Total liquid balance: {fmt(state.total_liquid_balance)}")
+            lines.append(f"- Est. monthly income: {fmt(state.monthly_income_est)}")
+            lines.append(f"- Est. monthly expenses: {fmt(state.monthly_expenses_est)}")
+            if state.monthly_income_est and state.monthly_expenses_est:
+                cash_flow = float(state.monthly_income_est) - float(state.monthly_expenses_est)
+                lines.append(f"- Monthly cash flow: ${cash_flow:,.2f}")
+            if state.emergency_fund_score is not None:
+                lines.append(f"- Emergency fund coverage: {float(state.emergency_fund_score):.1f} months")
+            if state.pay_frequency:
+                lines.append(f"- Pay frequency: {state.pay_frequency}")
+        else:
+            lines.append("- No financial summary available yet (sync transactions first).")
+
+        # ── Recent transactions (last 30 days) ────────────────────────────────
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=30)
+        txn_result = await self.db.execute(
+            select(Transaction)
+            .where(Transaction.user_id == user_id, Transaction.posted_at >= cutoff)
+            .order_by(Transaction.posted_at.desc())
+            .limit(50)
+        )
+        transactions = txn_result.scalars().all()
+
+        lines.append("\n### Recent Transactions (last 30 days)")
+        if transactions:
+            for txn in transactions:
+                sign = "-" if txn.amount > 0 else "+"  # Plaid: positive = debit
+                amount = abs(float(txn.amount))
+                name = txn.merchant_name or txn.raw_name or "Unknown"
+                category = txn.category_primary or "uncategorized"
+                lines.append(f"- {txn.posted_at} | {sign}${amount:,.2f} | {name} | {category}")
+        else:
+            lines.append("- No transactions in the last 30 days.")
+
+        return "\n".join(lines)
+
     async def stream_response(
         self, user: User, session: ChatSession, user_content: str
     ) -> AsyncGenerator[str, None]:
@@ -91,23 +168,31 @@ class LLMService:
         history = await self.get_messages(user.id, session.id)
         messages = [{"role": m.role, "content": m.content} for m in history[-20:] if m.role != "system"]
 
+        # Inject financial context into system prompt
+        financial_context = await self._build_financial_context(user.id)
+        system_prompt = f"{BASE_SYSTEM_PROMPT}\n{financial_context}"
+
         full_response = ""
-        with self.client.messages.stream(
-            model=settings.ANTHROPIC_MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        ) as stream:
-            for text in stream.text_stream:
-                full_response += text
-                yield f"data: {json.dumps({'delta': text})}\n\n"
+        try:
+            with self.client.messages.stream(
+                model=settings.ANTHROPIC_MODEL,
+                max_tokens=1024,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    full_response += text
+                    yield f"data: {json.dumps({'delta': text})}\n\n"
+        except Exception as e:
+            error_msg = f"I'm sorry, I couldn't process your request right now. ({type(e).__name__})"
+            yield f"data: {json.dumps({'delta': error_msg})}\n\n"
+            full_response = error_msg
 
         # Persist assistant message
         assistant_msg = ChatMessage(
             session_id=session.id,
             role="assistant",
             content=full_response,
-            token_count=stream.get_final_usage().output_tokens if hasattr(stream, "get_final_usage") else None,
         )
         self.db.add(assistant_msg)
         await self.db.flush()
