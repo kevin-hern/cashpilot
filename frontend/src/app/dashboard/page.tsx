@@ -32,12 +32,21 @@ interface PlaidItem {
   last_synced_at: string | null
 }
 
+interface TopTransaction {
+  id: string
+  raw_name: string | null
+  merchant_name: string | null
+  amount: number
+  posted_at: string
+}
+
 interface CategoryBreakdown {
   category: string
   total: number
   count: number
   percentage: number
   prev_month_total: number | null
+  top_transactions: TopTransaction[]
 }
 
 interface SpendingData {
@@ -68,21 +77,30 @@ function AccountTypeIcon({ type }: { type: string }) {
   return <div className={`${base} bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400`}>?</div>
 }
 
-function DonutChart({ categories, total }: { categories: CategoryBreakdown[]; total: number }) {
+function ChangeIndicator({ current, prev }: { current: number; prev: number | null }) {
+  if (prev === null || prev === 0) return null
+  const pct = ((current - prev) / prev) * 100
+  const up = pct > 0
+  return (
+    <span className={`text-xs ${up ? "text-red-500" : "text-green-600"}`}>
+      {up ? "▲" : "▼"}{Math.abs(pct).toFixed(0)}%
+    </span>
+  )
+}
+
+interface DonutChartProps {
+  categories: CategoryBreakdown[]
+  total: number
+  selected: string | null
+  onSelect: (cat: string | null) => void
+}
+
+function DonutChart({ categories, total, selected, onSelect }: DonutChartProps) {
   const R = 52
   const cx = 68
   const cy = 68
   const circumference = 2 * Math.PI * R
-
-  let offset = 0
-  const slices = categories.slice(0, 8).map((cat, i) => {
-    const pct = total > 0 ? cat.total / total : 0
-    const dash = pct * circumference
-    const gap = circumference - dash
-    const slice = { offset, dash, gap, color: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }
-    offset += dash
-    return slice
-  })
+  const hasSelection = selected !== null
 
   if (total === 0) {
     return (
@@ -92,40 +110,79 @@ function DonutChart({ categories, total }: { categories: CategoryBreakdown[]; to
     )
   }
 
+  let offset = 0
+  const slices = categories.slice(0, 10).map((cat, i) => {
+    const pct = total > 0 ? cat.total / total : 0
+    const dash = pct * circumference
+    const gap = circumference - dash
+    const slice = {
+      cat: cat.category,
+      offset,
+      dash,
+      gap,
+      color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+      isSelected: selected === cat.category,
+    }
+    offset += dash
+    return slice
+  })
+
   return (
-    <svg width={136} height={136}>
+    <svg
+      width={136}
+      height={136}
+      className="cursor-pointer shrink-0"
+      onClick={() => onSelect(null)}
+    >
+      {/* Background track */}
       <circle cx={cx} cy={cy} r={R} fill="none" stroke="#f4f4f5" strokeWidth={22}
         className="dark:[stroke:#27272a]" />
+
       {slices.map((s, i) => (
         <circle
           key={i}
           cx={cx} cy={cy} r={R}
           fill="none"
           stroke={s.color}
-          strokeWidth={22}
+          strokeWidth={s.isSelected ? 28 : 22}
           strokeDasharray={`${s.dash} ${s.gap}`}
           strokeDashoffset={circumference / 4 - s.offset}
           strokeLinecap="butt"
+          opacity={hasSelection && !s.isSelected ? 0.25 : 1}
+          style={{ transition: "opacity 0.15s ease, stroke-width 0.15s ease" }}
+          className="cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation()
+            onSelect(s.isSelected ? null : s.cat)
+          }}
         />
       ))}
-      <text x={cx} y={cy - 6} textAnchor="middle" fill="currentColor"
-        fontSize={9} fontWeight={500} className="fill-zinc-500">Total</text>
-      <text x={cx} y={cx + 9} textAnchor="middle" fill="currentColor"
-        fontSize={12} fontWeight={700} className="fill-zinc-900 dark:fill-white">
-        {fmt(total)}
-      </text>
-    </svg>
-  )
-}
 
-function ChangeIndicator({ current, prev }: { current: number; prev: number | null }) {
-  if (prev === null || prev === 0) return null
-  const pct = ((current - prev) / prev) * 100
-  const up = pct > 0
-  return (
-    <span className={`text-xs ${up ? "text-red-500" : "text-green-600"}`}>
-      {up ? "▲" : "▼"}{Math.abs(pct).toFixed(0)}%
-    </span>
+      {/* Center label */}
+      {selected ? (
+        <>
+          <text x={cx} y={cy - 8} textAnchor="middle" fontSize={8} fontWeight={500}
+            className="fill-zinc-500 pointer-events-none" style={{ userSelect: "none" }}>
+            {formatCategory(selected).split(" ")[0]}
+          </text>
+          <text x={cx} y={cy + 7} textAnchor="middle" fontSize={11} fontWeight={700}
+            className="fill-zinc-900 dark:fill-white pointer-events-none" style={{ userSelect: "none" }}>
+            {fmt(categories.find((c) => c.category === selected)?.total ?? 0)}
+          </text>
+        </>
+      ) : (
+        <>
+          <text x={cx} y={cy - 6} textAnchor="middle" fontSize={9} fontWeight={500}
+            className="fill-zinc-500 pointer-events-none" style={{ userSelect: "none" }}>
+            Total
+          </text>
+          <text x={cx} y={cy + 9} textAnchor="middle" fontSize={12} fontWeight={700}
+            className="fill-zinc-900 dark:fill-white pointer-events-none" style={{ userSelect: "none" }}>
+            {fmt(total)}
+          </text>
+        </>
+      )}
+    </svg>
   )
 }
 
@@ -141,6 +198,7 @@ export default function DashboardPage() {
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [spending, setSpending] = useState<SpendingData | null>(null)
   const [spendingLoading, setSpendingLoading] = useState(false)
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
 
   async function loadData() {
     setLoading(true)
@@ -217,7 +275,12 @@ export default function DashboardPage() {
     }
   }
 
+  function handleSelectCategory(cat: string | null) {
+    setSelectedCategory((prev) => (prev === cat ? null : cat))
+  }
+
   const hasAccounts = accounts.length > 0
+  const selectedCat = spending?.categories.find((c) => c.category === selectedCategory) ?? null
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -286,7 +349,6 @@ export default function DashboardPage() {
         {/* Accounts — collapsible */}
         {hasAccounts && (
           <div className="mb-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
-            {/* Collapse header */}
             <button
               className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
               onClick={() => setAccountsOpen((o) => !o)}
@@ -338,7 +400,6 @@ export default function DashboardPage() {
               </div>
             </button>
 
-            {/* Animated account list */}
             <div
               className="overflow-hidden transition-all duration-300 ease-in-out"
               style={{ maxHeight: accountsOpen ? `${accounts.length * 72 + 16}px` : "0px" }}
@@ -389,9 +450,14 @@ export default function DashboardPage() {
               <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">
                 Spending — {new Date().toLocaleString("default", { month: "long", year: "numeric" })}
               </h2>
-              <Link href="/spending" className="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors">
-                Details →
-              </Link>
+              {selectedCategory && (
+                <button
+                  onClick={() => setSelectedCategory(null)}
+                  className="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+                >
+                  Clear
+                </button>
+              )}
             </div>
 
             {spendingLoading && (
@@ -399,37 +465,81 @@ export default function DashboardPage() {
             )}
 
             {!spendingLoading && spending && spending.categories.length > 0 && (
-              <div className="flex gap-5 items-start">
-                {/* Donut */}
-                <div className="shrink-0">
-                  <DonutChart categories={spending.categories} total={spending.total_spending} />
+              <>
+                {/* Chart + legend row */}
+                <div className="flex gap-5 items-start">
+                  <DonutChart
+                    categories={spending.categories}
+                    total={spending.total_spending}
+                    selected={selectedCategory}
+                    onSelect={handleSelectCategory}
+                  />
+
+                  <div className="flex-1 min-w-0 space-y-1.5 py-1">
+                    {spending.categories.slice(0, 8).map((cat, i) => {
+                      const isSelected = selectedCategory === cat.category
+                      const dimmed = selectedCategory !== null && !isSelected
+                      return (
+                        <button
+                          key={cat.category}
+                          className={`w-full flex items-center gap-2 rounded-md px-1.5 py-1 text-left transition-all ${
+                            isSelected
+                              ? "bg-zinc-100 dark:bg-zinc-800"
+                              : "hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+                          } ${dimmed ? "opacity-40" : ""}`}
+                          onClick={() => handleSelectCategory(cat.category)}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }}
+                          />
+                          <span className="text-xs text-zinc-600 dark:text-zinc-400 flex-1 truncate">
+                            {formatCategory(cat.category)}
+                          </span>
+                          <ChangeIndicator current={cat.total} prev={cat.prev_month_total} />
+                          <span className="text-xs font-medium text-zinc-900 dark:text-white shrink-0">
+                            {fmt(cat.total)}
+                          </span>
+                          <span className="text-xs text-zinc-400 w-8 text-right shrink-0">
+                            {cat.percentage}%
+                          </span>
+                        </button>
+                      )
+                    })}
+                    {spending.categories.length > 8 && (
+                      <p className="text-xs text-zinc-400 pl-4">+{spending.categories.length - 8} more</p>
+                    )}
+                  </div>
                 </div>
 
-                {/* Category list */}
-                <div className="flex-1 min-w-0 space-y-2 py-1">
-                  {spending.categories.slice(0, 6).map((cat, i) => (
-                    <div key={cat.category} className="flex items-center gap-2">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }}
-                      />
-                      <span className="text-xs text-zinc-600 dark:text-zinc-400 flex-1 truncate">
-                        {formatCategory(cat.category)}
-                      </span>
-                      <ChangeIndicator current={cat.total} prev={cat.prev_month_total} />
-                      <span className="text-xs font-medium text-zinc-900 dark:text-white shrink-0">
-                        {fmt(cat.total)}
-                      </span>
-                      <span className="text-xs text-zinc-400 w-8 text-right shrink-0">
-                        {cat.percentage}%
-                      </span>
+                {/* Transaction drill-down */}
+                {selectedCat && (
+                  <div className="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+                    <p className="text-xs font-medium text-zinc-500 mb-2">
+                      {selectedCat.count} transaction{selectedCat.count !== 1 ? "s" : ""} totaling{" "}
+                      <span className="text-zinc-900 dark:text-white">{fmt(selectedCat.total)}</span>
+                    </p>
+                    <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                      {selectedCat.top_transactions.map((txn) => (
+                        <div
+                          key={txn.id}
+                          className="flex items-center gap-3 py-1.5 text-xs border-b border-zinc-50 dark:border-zinc-800/60 last:border-0"
+                        >
+                          <span className="text-zinc-400 shrink-0 w-16">
+                            {new Date(txn.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </span>
+                          <span className="flex-1 text-zinc-700 dark:text-zinc-300 truncate">
+                            {txn.merchant_name ?? txn.raw_name ?? "Unknown"}
+                          </span>
+                          <span className="font-medium text-zinc-900 dark:text-white shrink-0">
+                            {fmt(txn.amount)}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {spending.categories.length > 6 && (
-                    <p className="text-xs text-zinc-400 pl-4">+{spending.categories.length - 6} more</p>
-                  )}
-                </div>
-              </div>
+                  </div>
+                )}
+              </>
             )}
 
             {!spendingLoading && spending && spending.categories.length === 0 && (

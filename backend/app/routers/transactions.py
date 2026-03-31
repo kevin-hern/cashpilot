@@ -145,7 +145,7 @@ async def get_spending_by_category(
     categories: list[CategoryBreakdown] = []
     for cat, cat_list in sorted(cat_txns.items(), key=lambda x: -sum(float(t.amount) for t in x[1])):
         cat_total = sum(float(t.amount) for t in cat_list)
-        top5 = sorted(cat_list, key=lambda t: -float(t.amount))[:5]
+        by_date = sorted(cat_list, key=lambda t: t.posted_at, reverse=True)
         categories.append(CategoryBreakdown(
             category=cat,
             total=round(cat_total, 2),
@@ -160,7 +160,7 @@ async def get_spending_by_category(
                     amount=round(float(t.amount), 2),
                     posted_at=str(t.posted_at),
                 )
-                for t in top5
+                for t in by_date
             ],
         ))
 
