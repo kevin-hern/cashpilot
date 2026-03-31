@@ -28,7 +28,10 @@ from datetime import timezone
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import uuid
 
+import logging
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 from app.models.user_model import User
 from app.models.plaid_model import PlaidItem, Account, AccountBalance
 from app.models.transaction_model import Transaction, FinancialState
@@ -97,10 +100,13 @@ class PlaidService:
         )
 
     async def exchange_public_token(self, user: User, body: ExchangeRequest) -> ExchangeResponse:
+        logger.info("exchange_public_token: calling Plaid API")
         exchange_resp = await asyncio.to_thread(
             self.client.item_public_token_exchange,
             ItemPublicTokenExchangeRequest(public_token=body.public_token),
         )
+        logger.info("exchange_public_token: Plaid API returned item_id=%s", exchange_resp.item_id)
+
         # v38: dot notation
         access_token = exchange_resp.access_token
         plaid_item_id = exchange_resp.item_id
@@ -114,8 +120,10 @@ class PlaidService:
         )
         self.db.add(item)
         await self.db.flush()
+        logger.info("exchange_public_token: PlaidItem saved, syncing accounts")
 
         await self._sync_accounts(item, access_token)
+        logger.info("exchange_public_token: accounts synced, done")
 
         return ExchangeResponse(item_id=item.id, institution_name=item.institution_name)
 

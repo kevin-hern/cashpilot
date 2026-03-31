@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging
+import traceback
 
 from app.db.database import get_db
 from app.schemas.plaid_schema import (
@@ -12,6 +14,8 @@ from app.dependencies import get_current_user
 from app.models.user_model import User
 import uuid
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -20,8 +24,12 @@ async def create_link_token(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    svc = PlaidService(db)
-    return await svc.create_link_token(current_user)
+    try:
+        svc = PlaidService(db)
+        return await svc.create_link_token(current_user)
+    except Exception as exc:
+        logger.error("link-token failed: %s\n%s", exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"link-token error: {exc}")
 
 
 @router.post("/exchange", response_model=ExchangeResponse, status_code=status.HTTP_201_CREATED)
@@ -30,8 +38,18 @@ async def exchange_public_token(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    svc = PlaidService(db)
-    return await svc.exchange_public_token(current_user, body)
+    logger.info("exchange: start user=%s institution=%s", current_user.id, body.institution_name)
+    try:
+        svc = PlaidService(db)
+        logger.info("exchange: calling Plaid item_public_token_exchange")
+        result = await svc.exchange_public_token(current_user, body)
+        logger.info("exchange: success item_id=%s", result.item_id)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("exchange: FAILED user=%s error=%s\n%s", current_user.id, exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Exchange failed: {exc}")
 
 
 @router.get("/items", response_model=list[PlaidItemOut])
