@@ -1,10 +1,12 @@
+// NEXT_PUBLIC_API_URL must be set in Vercel → Settings → Environment Variables
+// before building. It is baked into the JS bundle at build time; changing it
+// in the dashboard requires a new deployment to take effect.
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
-// Debug: log which API URL is active (visible in browser console)
 if (typeof window !== "undefined") {
   console.log("[CashPilot] API base URL:", BASE_URL)
   if (!process.env.NEXT_PUBLIC_API_URL) {
-    console.warn("[CashPilot] NEXT_PUBLIC_API_URL is not set — falling back to localhost. Set it in Vercel project settings.")
+    console.warn("[CashPilot] NEXT_PUBLIC_API_URL not set at build time — using localhost fallback. In production, set this in Vercel and redeploy.")
   }
 }
 
