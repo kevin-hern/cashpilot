@@ -159,6 +159,18 @@ export const api = {
       created_at: string
     }>>(`/api/v1/approvals${status ? `?status=${status}` : ""}`),
 
+  createPendingIntent: (body: {
+    intent_type: string
+    title: string
+    explanation: string
+    amount: number | null
+    confidence: number | null
+  }) =>
+    request<{ id: string; status: string }>("/api/v1/approvals/pending", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   approveChatIntent: (body: {
     intent_type: string
     title: string

@@ -61,21 +61,42 @@ type ApproveStatus = "idle" | "loading" | "approved" | "error"
 function IntentCard({ data }: { data: Intent }) {
   const [status, setStatus] = useState<ApproveStatus>("idle")
   const [errorMsg, setErrorMsg] = useState("")
+  const [intentId, setIntentId] = useState<string | null>(null)
+  const created = useRef(false)
   const icon = INTENT_ICONS[data.type] ?? "💡"
   const confidencePct = Math.round((data.confidence ?? 0) * 100)
+
+  // Save as pending_approval as soon as the card renders (once only)
+  useEffect(() => {
+    if (created.current) return
+    created.current = true
+    api.createPendingIntent({
+      intent_type: data.type,
+      title: data.title,
+      explanation: data.explanation,
+      amount: data.amount,
+      confidence: data.confidence,
+    }).then((res) => setIntentId(res.id)).catch(() => {/* non-fatal */})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleApprove() {
     setStatus("loading")
     setErrorMsg("")
     try {
-      await api.approveChatIntent({
-        intent_type: data.type,
-        title: data.title,
-        explanation: data.explanation,
-        amount: data.amount,
-        confidence: data.confidence,
-        idempotency_key: crypto.randomUUID(),
-      })
+      if (intentId) {
+        await api.approveIntent(intentId, crypto.randomUUID())
+      } else {
+        // Fallback: create-and-approve in one shot if pending save failed
+        await api.approveChatIntent({
+          intent_type: data.type,
+          title: data.title,
+          explanation: data.explanation,
+          amount: data.amount,
+          confidence: data.confidence,
+          idempotency_key: crypto.randomUUID(),
+        })
+      }
       setStatus("approved")
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Approval failed")

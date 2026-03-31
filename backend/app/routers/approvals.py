@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 
 from app.db.database import get_db
-from app.schemas.intent_schema import IntentOut, ApproveRequest, RejectRequest, ExecutionOut, ChatIntentRequest
+from app.schemas.intent_schema import IntentOut, ApproveRequest, RejectRequest, ExecutionOut, ChatIntentRequest, CreatePendingIntentRequest
 from app.models.intent_model import Intent
 from app.services.approval_service import ApprovalService
 from app.services.audit_service import AuditService
@@ -11,6 +11,28 @@ from app.dependencies import get_current_user
 from app.models.user_model import User
 
 router = APIRouter()
+
+
+@router.post("/pending", response_model=IntentOut, status_code=status.HTTP_201_CREATED)
+async def create_pending_intent(
+    body: CreatePendingIntentRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a chat-surfaced intent as pending_approval without executing it."""
+    intent = Intent(
+        user_id=current_user.id,
+        intent_type=body.intent_type,
+        title=body.title,
+        explanation=body.explanation,
+        amount=body.amount,
+        confidence_score=body.confidence,
+        generated_by="llm",
+        status="pending_approval",
+    )
+    db.add(intent)
+    await db.flush()
+    return intent
 
 
 @router.post("/", response_model=ExecutionOut, status_code=status.HTTP_201_CREATED)

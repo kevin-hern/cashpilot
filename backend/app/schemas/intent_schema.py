@@ -20,6 +20,15 @@ class IntentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CreatePendingIntentRequest(BaseModel):
+    """Creates an intent with status pending_approval (no execution yet)."""
+    intent_type: str
+    title: str
+    explanation: str
+    amount: float | None = None
+    confidence: float | None = None
+
+
 class ChatIntentRequest(BaseModel):
     """Used when approving an intent surfaced directly in chat (no pre-existing DB record)."""
     intent_type: str
