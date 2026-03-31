@@ -69,7 +69,7 @@ async def create_and_approve_chat_intent(
     return execution
 
 
-@router.get("/", response_model=list[IntentOut])
+@router.get("", response_model=list[IntentOut])
 async def list_intents(
     status_filter: str | None = Query(
         None,
