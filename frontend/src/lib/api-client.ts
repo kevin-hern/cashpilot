@@ -197,6 +197,13 @@ export const api = {
     }),
 
   // ── Spending ──────────────────────────────────────────────────────────────
+  getSpendingOverTime: (granularity: string, year: number) =>
+    request<{
+      granularity: string
+      year: number
+      points: Array<{ label: string; start: string; end: string; total: number }>
+    }>(`/api/v1/transactions/spending-over-time?granularity=${granularity}&year=${year}`),
+
   getSpendingBreakdown: (month: number, year: number) =>
     request<{
       month: number

@@ -43,6 +43,19 @@ class SpendingBreakdownResponse(BaseModel):
     categories: list[CategoryBreakdown]
 
 
+class SpendingPoint(BaseModel):
+    label: str        # display label, e.g. "Jan", "W12", "Mar 15"
+    start: str        # ISO date string (inclusive)
+    end: str          # ISO date string (inclusive)
+    total: float
+
+
+class SpendingOverTimeResponse(BaseModel):
+    granularity: str
+    year: int
+    points: list[SpendingPoint]
+
+
 router = APIRouter()
 
 
@@ -170,6 +183,136 @@ async def get_spending_by_category(
         total_spending=round(total_spending, 2),
         categories=categories,
     )
+
+
+@router.get("/spending-over-time", response_model=SpendingOverTimeResponse)
+async def get_spending_over_time(
+    granularity: str = Query("month", regex="^(day|week|month|quarter)$"),
+    year: int = Query(None, ge=2020, le=2100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime, date as date_type, timedelta
+    import calendar
+
+    now = datetime.utcnow()
+    if year is None:
+        year = now.year
+
+    # Fetch all non-pending expense transactions for the relevant window
+    if granularity == "day":
+        window_start = (now - timedelta(days=29)).date()
+        window_end = now.date()
+    elif granularity == "week":
+        window_start = (now - timedelta(weeks=11, days=now.weekday())).date()
+        window_end = now.date()
+    elif granularity == "quarter":
+        window_start = date_type(year, 1, 1)
+        window_end = date_type(year, 12, 31)
+    else:  # month
+        window_start = date_type(year, 1, 1)
+        window_end = date_type(year, 12, 31)
+
+    txn_result = await db.execute(
+        select(Transaction).where(
+            Transaction.user_id == current_user.id,
+            Transaction.pending == False,
+            Transaction.amount > 0,
+            Transaction.category_primary != "INCOME",
+            Transaction.posted_at >= window_start,
+            Transaction.posted_at <= window_end,
+        )
+    )
+    txns = txn_result.scalars().all()
+
+    # Build bucket totals
+    from collections import defaultdict
+    buckets: dict[str, float] = defaultdict(float)
+    meta: dict[str, tuple[str, str]] = {}  # key → (start, end)
+
+    if granularity == "day":
+        for i in range(30):
+            d = (now - timedelta(days=29 - i)).date()
+            key = d.isoformat()
+            buckets[key] = 0.0
+            meta[key] = (key, key)
+        for t in txns:
+            key = t.posted_at.isoformat()
+            if key in buckets:
+                buckets[key] += float(t.amount)
+
+    elif granularity == "week":
+        # ISO weeks: align to Monday, last 12 weeks
+        today = now.date()
+        monday = today - timedelta(days=today.weekday())
+        for i in range(12):
+            week_start = monday - timedelta(weeks=11 - i)
+            week_end = week_start + timedelta(days=6)
+            key = week_start.isoformat()
+            buckets[key] = 0.0
+            meta[key] = (week_start.isoformat(), week_end.isoformat())
+        for t in txns:
+            d = t.posted_at
+            wk_mon = d - timedelta(days=d.weekday())
+            key = wk_mon.isoformat()
+            if key in buckets:
+                buckets[key] += float(t.amount)
+
+    elif granularity == "quarter":
+        for q in range(1, 5):
+            q_month_start = (q - 1) * 3 + 1
+            q_start = date_type(year, q_month_start, 1)
+            q_end_month = q_month_start + 2
+            q_end = date_type(year, q_end_month, calendar.monthrange(year, q_end_month)[1])
+            key = f"Q{q}"
+            buckets[key] = 0.0
+            meta[key] = (q_start.isoformat(), q_end.isoformat())
+        for t in txns:
+            m = t.posted_at.month
+            q = (m - 1) // 3 + 1
+            key = f"Q{q}"
+            buckets[key] += float(t.amount)
+
+    else:  # month
+        month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+        for m in range(1, 13):
+            m_start = date_type(year, m, 1)
+            m_end = date_type(year, m, calendar.monthrange(year, m)[1])
+            key = month_names[m - 1]
+            buckets[key] = 0.0
+            meta[key] = (m_start.isoformat(), m_end.isoformat())
+        for t in txns:
+            key = month_names[t.posted_at.month - 1]
+            buckets[key] += float(t.amount)
+
+    # Build ordered points
+    MONTH_NAMES_LIST = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    if granularity == "month":
+        ordered_keys = MONTH_NAMES_LIST
+    elif granularity == "quarter":
+        ordered_keys = ["Q1", "Q2", "Q3", "Q4"]
+    else:
+        ordered_keys = sorted(buckets.keys())
+
+    points = []
+    for key in ordered_keys:
+        start, end = meta[key]
+        if granularity == "day":
+            d = date_type.fromisoformat(key)
+            label = d.strftime("%-m/%-d")
+        elif granularity == "week":
+            d = date_type.fromisoformat(key)
+            label = f"W{d.strftime('%W')}"
+        else:
+            label = key
+        points.append(SpendingPoint(
+            label=label,
+            start=start,
+            end=end,
+            total=round(buckets[key], 2),
+        ))
+
+    return SpendingOverTimeResponse(granularity=granularity, year=year, points=points)
 
 
 @router.post("/reclassify")

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { api } from "@/lib/api-client"
 import PlaidLinkButton from "@/components/PlaidLink"
+import SpendingChart from "@/components/SpendingChart"
 
 interface FinancialState {
   total_liquid_balance: number
@@ -549,6 +550,13 @@ export default function DashboardPage() {
             {!spendingLoading && !spending && (
               <p className="text-xs text-zinc-400 py-4 text-center">Could not load spending data.</p>
             )}
+          </div>
+        )}
+
+        {/* Spending over time chart */}
+        {hasAccounts && (
+          <div className="mb-6">
+            <SpendingChart />
           </div>
         )}
 
