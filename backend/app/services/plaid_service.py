@@ -422,7 +422,9 @@ class PlaidService:
         pass
 
     async def _sync_accounts(self, item: PlaidItem, access_token: str) -> None:
-        resp = self.client.accounts_get(AccountsGetRequest(access_token=access_token))
+        resp = await asyncio.to_thread(
+            self.client.accounts_get, AccountsGetRequest(access_token=access_token)
+        )
         # v38: resp.accounts is a list of AccountBase objects with dot notation
 
         # First, purge any duplicate rows that snuck in before this fix —
