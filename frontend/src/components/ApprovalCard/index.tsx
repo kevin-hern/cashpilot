@@ -30,7 +30,7 @@ const TYPE_LABELS: Record<string, string> = {
 
 const STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
   pending_approval: { label: "Pending", classes: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400" },
-  approved:         { label: "Approved", classes: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400" },
+  approved:         { label: "Approved ✓", classes: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400" },
   executed:         { label: "Executed ✓", classes: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400" },
   rejected:         { label: "Rejected", classes: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400" },
   failed:           { label: "Failed", classes: "bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400" },
@@ -81,7 +81,8 @@ export default function ApprovalCard({ intent, onApprove, onReject }: Props) {
   }
 
   const isPending = localStatus === "pending_approval"
-  const isActionable = isPending && intent.intent_type !== "alert" && intent.intent_type !== "suggestion"
+  // Show approve/dismiss for all pending intents except pure informational alerts
+  const isActionable = isPending && intent.intent_type !== "alert"
   const statusCfg = STATUS_CONFIG[localStatus] ?? { label: localStatus, classes: "bg-zinc-100 text-zinc-500" }
 
   return (
