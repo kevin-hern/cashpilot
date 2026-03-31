@@ -16,6 +16,7 @@ interface FinancialState {
 
 interface Account {
   id: string
+  plaid_account_id: string
   name: string
   official_name: string | null
   type: string
@@ -62,11 +63,11 @@ export default function DashboardPage() {
         api.getPendingApprovals() as Promise<unknown[]>,
       ])
       setState(s)
-      // Deduplicate by id in case the backend returns duplicate account rows
+      // Deduplicate by plaid_account_id — the true unique key per bank account
       const seen = new Set<string>()
-      setAccounts(a.filter((acct) => {
-        if (seen.has(acct.id)) return false
-        seen.add(acct.id)
+      setAccounts((a as Account[]).filter((acct) => {
+        if (seen.has(acct.plaid_account_id)) return false
+        seen.add(acct.plaid_account_id)
         return true
       }))
       setItems(it)

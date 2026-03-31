@@ -14,6 +14,7 @@ router = APIRouter()
 
 class AccountWithBalance(BaseModel):
     id: uuid.UUID
+    plaid_account_id: str
     name: str
     official_name: str | None
     type: str
@@ -51,6 +52,7 @@ async def list_accounts(
 
         out.append(AccountWithBalance(
             id=acct.id,
+            plaid_account_id=acct.plaid_account_id,
             name=acct.name,
             official_name=acct.official_name,
             type=acct.type,

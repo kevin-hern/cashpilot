@@ -118,6 +118,7 @@ export const api = {
   getAccounts: () =>
     request<Array<{
       id: string
+      plaid_account_id: string
       name: string
       official_name: string | null
       type: string

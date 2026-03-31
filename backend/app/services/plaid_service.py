@@ -8,7 +8,8 @@ v38 API notes:
 - Environment.Development was removed; sandbox covers dev use
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from fastapi import HTTPException
 import plaid
 from plaid.api import plaid_api
@@ -374,14 +375,28 @@ class PlaidService:
     async def _sync_accounts(self, item: PlaidItem, access_token: str) -> None:
         resp = self.client.accounts_get(AccountsGetRequest(access_token=access_token))
         # v38: resp.accounts is a list of AccountBase objects with dot notation
-        for acct in resp.accounts:
-            # Upsert — avoid duplicate rows if exchange_public_token is called again
-            existing = await self.db.execute(
-                select(Account).where(Account.plaid_account_id == acct.account_id)
+
+        # First, purge any duplicate rows that snuck in before this fix —
+        # keep the oldest row (MIN id) per plaid_account_id.
+        min_ids = (
+            select(func.min(Account.id).label("keep_id"))
+            .where(Account.user_id == item.user_id)
+            .group_by(Account.plaid_account_id)
+            .subquery()
+        )
+        await self.db.execute(
+            delete(Account).where(
+                Account.user_id == item.user_id,
+                Account.id.not_in(select(min_ids.c.keep_id)),
             )
-            account = existing.scalar_one_or_none()
-            if account is None:
-                account = Account(
+        )
+        await self.db.flush()
+
+        for acct in resp.accounts:
+            # INSERT … ON CONFLICT DO UPDATE (true upsert — no race condition)
+            stmt = (
+                pg_insert(Account)
+                .values(
                     user_id=item.user_id,
                     plaid_item_id=item.id,
                     plaid_account_id=acct.account_id,
@@ -390,11 +405,23 @@ class PlaidService:
                     type=str(acct.type),
                     subtype=str(acct.subtype) if acct.subtype else None,
                 )
-                self.db.add(account)
-                await self.db.flush()
+                .on_conflict_do_update(
+                    index_elements=["plaid_account_id"],
+                    set_={
+                        "name": acct.name,
+                        "official_name": getattr(acct, "official_name", None),
+                        "subtype": str(acct.subtype) if acct.subtype else None,
+                    },
+                )
+                .returning(Account.id)
+            )
+            result = await self.db.execute(stmt)
+            account_id = result.scalar_one()
+            await self.db.flush()
+
             balances = acct.balances
             balance = AccountBalance(
-                account_id=account.id,
+                account_id=account_id,
                 available=getattr(balances, "available", None),
                 current=balances.current,
                 limit_amount=getattr(balances, "limit", None),
