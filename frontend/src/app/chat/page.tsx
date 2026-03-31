@@ -150,9 +150,10 @@ function IntentCard({ data }: { data: Intent }) {
   )
 }
 
-function WidgetPreview({ widget }: { widget: WidgetEvent }) {
-  const safeJson = JSON.stringify({}).replace(/<\/script>/gi, "<\\/script>")
-  // Inject empty data — real data comes from the dashboard. This is just a preview.
+function WidgetPreview({ widget, financialData }: { widget: WidgetEvent; financialData: object | null }) {
+  // Inject real financial data if available, otherwise empty defaults
+  const payload = financialData ?? { accounts: [], liquid_balance: null, monthly_income: null, monthly_expenses: null, monthly_cash_flow: null, transactions: [], paychecks: [] }
+  const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, "<\\/script>")
   const dataScript = `<script>window.CASHPILOT_DATA=${safeJson};<\/script>`
   const srcdoc = widget.code.includes("</head>")
     ? widget.code.replace("</head>", `${dataScript}</head>`)
@@ -167,12 +168,13 @@ function WidgetPreview({ widget }: { widget: WidgetEvent }) {
           </svg>
           <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">{widget.title}</span>
         </div>
-        <Link
+        {/* Hard navigation forces dashboard to remount and re-fetch widgets */}
+        <a
           href="/dashboard"
           className="text-xs text-blue-500 hover:text-blue-600 transition-colors"
         >
           View on dashboard →
-        </Link>
+        </a>
       </div>
       <iframe
         srcDoc={srcdoc}
@@ -186,7 +188,7 @@ function WidgetPreview({ widget }: { widget: WidgetEvent }) {
   )
 }
 
-function AssistantContent({ content, streaming, widget }: { content: string; streaming: boolean; widget?: WidgetEvent }) {
+function AssistantContent({ content, streaming, widget, financialData }: { content: string; streaming: boolean; widget?: WidgetEvent; financialData: object | null }) {
   if (!content && !widget) {
     return streaming ? <span className="animate-pulse text-zinc-400">…</span> : null
   }
@@ -208,7 +210,7 @@ function AssistantContent({ content, streaming, widget }: { content: string; str
           </div>
         )
       })}
-      {widget && <WidgetPreview widget={widget} />}
+      {widget && <WidgetPreview widget={widget} financialData={financialData} />}
     </div>
   )
 }
@@ -218,6 +220,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [streaming, setStreaming] = useState(false)
+  const [financialData, setFinancialData] = useState<object | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -225,6 +228,13 @@ export default function ChatPage() {
       const session = s as { id: string }
       setSessionId(session.id)
     })
+    // Fetch financial data for widget previews (non-fatal if it fails)
+    api.getWidgetData()
+      .then((d) => {
+        console.log("[Chat] financial data fetched for widget previews")
+        setFinancialData(d)
+      })
+      .catch((err) => console.warn("[Chat] getWidgetData failed (non-fatal):", err))
   }, [])
 
   useEffect(() => {
@@ -254,7 +264,7 @@ export default function ChatPage() {
       },
       () => setStreaming(false),
       (widgetEvent) => {
-        // Attach widget to the last assistant message
+        console.log("[Chat] widget SSE event received:", widgetEvent.id, widgetEvent.title)
         setMessages((prev) => {
           const updated = [...prev]
           updated[updated.length - 1] = {
@@ -295,6 +305,7 @@ export default function ChatPage() {
                   content={msg.content}
                   streaming={streaming && i === messages.length - 1}
                   widget={msg.widget}
+                  financialData={financialData}
                 />
               </div>
             )}

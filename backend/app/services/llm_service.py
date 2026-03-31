@@ -386,16 +386,28 @@ class LLMService:
         # After text stream: generate widget (async thread so we don't block event loop)
         if is_widget:
             try:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info("[widget] Detected widget request, calling Claude for generation...")
+
                 result = await asyncio.to_thread(self._generate_widget_code_sync, user_content)
                 if result:
                     from app.models.widget_model import Widget
                     title, code = result
+                    logger.info(f"[widget] Claude generated widget titled '{title}' ({len(code)} chars)")
                     widget = Widget(user_id=user.id, title=title, component_code=code)
                     self.db.add(widget)
                     await self.db.flush()
+                    # Explicit commit here — the StreamingResponse generator runs AFTER
+                    # get_db's auto-commit, so we must commit manually or the widget is lost.
+                    await self.db.commit()
+                    logger.info(f"[widget] Saved and committed widget id={widget.id}")
                     yield f"data: {json.dumps({'type': 'widget', 'id': str(widget.id), 'title': title, 'code': code})}\n\n"
-            except Exception:
-                pass  # Non-fatal — text response already delivered
+                else:
+                    logger.warning("[widget] Claude generation returned None — widget not saved")
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(f"[widget] Generation/save failed: {exc}", exc_info=True)
 
         yield "data: [DONE]\n\n"
 

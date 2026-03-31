@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import uuid
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.models.widget_model import Widget
@@ -34,7 +37,9 @@ async def list_widgets(
         .where(Widget.user_id == current_user.id)
         .order_by(Widget.created_at.desc())
     )
-    return result.scalars().all()
+    widgets = result.scalars().all()
+    logger.info(f"[widget] GET /widgets user={current_user.id} → {len(widgets)} widgets")
+    return widgets
 
 
 @router.post("", response_model=WidgetOut, status_code=status.HTTP_201_CREATED)

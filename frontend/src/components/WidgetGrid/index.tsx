@@ -25,9 +25,10 @@ interface FinancialData {
   paychecks: Array<{ amount: number; source: string }>
 }
 
-function buildSrcdoc(code: string, data: FinancialData): string {
-  // Escape </script> within JSON to avoid early termination of the inline script tag
-  const safeJson = JSON.stringify(data).replace(/<\/script>/gi, "<\\/script>")
+function buildSrcdoc(code: string, data: FinancialData | null): string {
+  const payload = data ?? { accounts: [], liquid_balance: null, monthly_income: null, monthly_expenses: null, monthly_cash_flow: null, transactions: [], paychecks: [] }
+  // Escape </script> so the injected JSON doesn't terminate the script tag early
+  const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, "<\\/script>")
   const dataScript = `<script>window.CASHPILOT_DATA=${safeJson};</script>`
 
   if (code.includes("</head>")) {
@@ -56,12 +57,13 @@ function WidgetCard({
     try {
       await api.deleteWidget(widget.id)
       onDelete(widget.id)
-    } catch {
+    } catch (err) {
+      console.error("[WidgetGrid] delete failed:", err)
       setDeleting(false)
     }
   }
 
-  const srcdoc = financialData ? buildSrcdoc(widget.component_code, financialData) : widget.component_code
+  const srcdoc = buildSrcdoc(widget.component_code, financialData)
 
   return (
     <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden flex flex-col">
@@ -84,7 +86,7 @@ function WidgetCard({
         </button>
       </div>
 
-      {/* Sandboxed iframe */}
+      {/* Sandboxed iframe — allow-scripts only (no same-origin) */}
       <iframe
         srcDoc={srcdoc}
         sandbox="allow-scripts"
@@ -102,18 +104,36 @@ const WidgetGrid = forwardRef<WidgetGridHandle, { className?: string }>(
     const [widgets, setWidgets] = useState<Widget[]>([])
     const [financialData, setFinancialData] = useState<FinancialData | null>(null)
     const [loading, setLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
 
     async function load() {
+      console.log("[WidgetGrid] load() called")
       setLoading(true)
+      setError(null)
       try {
-        const [w, d] = await Promise.all([
+        // Fetch widgets and financial data in parallel.
+        // Financial data failure is non-fatal — widgets still render (with empty data).
+        const [widgetResult, dataResult] = await Promise.allSettled([
           api.getWidgets(),
           api.getWidgetData(),
         ])
-        setWidgets(w as Widget[])
-        setFinancialData(d as FinancialData)
-      } catch {
-        // non-fatal
+
+        if (widgetResult.status === "fulfilled") {
+          const w = widgetResult.value as Widget[]
+          console.log(`[WidgetGrid] fetched ${w.length} widgets:`, w.map((x) => x.title))
+          setWidgets(w)
+        } else {
+          console.error("[WidgetGrid] getWidgets() failed:", widgetResult.reason)
+          setError("Failed to load widgets")
+        }
+
+        if (dataResult.status === "fulfilled") {
+          console.log("[WidgetGrid] financial data fetched OK")
+          setFinancialData(dataResult.value as FinancialData)
+        } else {
+          console.warn("[WidgetGrid] getWidgetData() failed (non-fatal):", dataResult.reason)
+          // Keep financialData null — widgets render with empty CASHPILOT_DATA
+        }
       } finally {
         setLoading(false)
       }
@@ -123,12 +143,22 @@ const WidgetGrid = forwardRef<WidgetGridHandle, { className?: string }>(
 
     useImperativeHandle(ref, () => ({
       addWidget(w: { id: string; title: string; component_code: string }) {
+        console.log("[WidgetGrid] addWidget() called:", w.title)
         setWidgets((prev) => [
-          { id: w.id, title: w.title, description: null, component_code: w.component_code, created_at: new Date().toISOString() },
+          {
+            id: w.id,
+            title: w.title,
+            description: null,
+            component_code: w.component_code,
+            created_at: new Date().toISOString(),
+          },
           ...prev,
         ])
       },
-      refresh: load,
+      refresh() {
+        console.log("[WidgetGrid] refresh() called")
+        load()
+      },
     }))
 
     function handleDelete(id: string) {
@@ -137,10 +167,22 @@ const WidgetGrid = forwardRef<WidgetGridHandle, { className?: string }>(
 
     if (loading) {
       return (
-        <div className={`grid grid-cols-1 lg:grid-cols-2 gap-4 ${className}`}>
-          {[1, 2].map((i) => (
-            <div key={i} className="h-[420px] rounded-xl bg-zinc-100 dark:bg-zinc-900 animate-pulse" />
-          ))}
+        <div className={className}>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-white mb-3">My Widgets</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {[1, 2].map((i) => (
+              <div key={i} className="h-[420px] rounded-xl bg-zinc-100 dark:bg-zinc-900 animate-pulse" />
+            ))}
+          </div>
+        </div>
+      )
+    }
+
+    if (error) {
+      return (
+        <div className={className}>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-white mb-3">My Widgets</h2>
+          <p className="text-xs text-red-500">{error}</p>
         </div>
       )
     }
