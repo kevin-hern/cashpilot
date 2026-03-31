@@ -8,7 +8,7 @@ v38 API notes:
 - Environment.Development was removed; sandbox covers dev use
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from fastapi import HTTPException
 from app.models.transaction_model import FinancialEvent
@@ -435,19 +435,23 @@ class PlaidService:
         )
         # v38: resp.accounts is a list of AccountBase objects with dot notation
 
-        # First, purge any duplicate rows that snuck in before this fix —
-        # keep the oldest row (MIN id) per plaid_account_id.
-        min_ids = (
-            select(func.min(Account.id).label("keep_id"))
-            .where(Account.user_id == item.user_id)
-            .group_by(Account.plaid_account_id)
-            .subquery()
-        )
+        # Purge duplicate rows — keep the most recently created row per
+        # plaid_account_id. Uses DISTINCT ON which is PostgreSQL-native and
+        # works correctly on UUID primary keys (unlike min() which requires
+        # a btree-comparable type).
+        from sqlalchemy import text
         await self.db.execute(
-            delete(Account).where(
-                Account.user_id == item.user_id,
-                Account.id.not_in(select(min_ids.c.keep_id)),
-            )
+            text("""
+                DELETE FROM accounts
+                WHERE user_id = :user_id
+                  AND id NOT IN (
+                      SELECT DISTINCT ON (plaid_account_id) id
+                      FROM accounts
+                      WHERE user_id = :user_id
+                      ORDER BY plaid_account_id, created_at DESC
+                  )
+            """),
+            {"user_id": str(item.user_id)},
         )
         await self.db.flush()
 
