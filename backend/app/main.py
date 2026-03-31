@@ -21,6 +21,7 @@ app = FastAPI(
     version="0.1.0",
     description="AI-powered financial assistant backend",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 app.add_middleware(
