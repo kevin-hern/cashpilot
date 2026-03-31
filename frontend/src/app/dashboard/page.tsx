@@ -201,25 +201,68 @@ export default function DashboardPage() {
   const [spending, setSpending] = useState<SpendingData | null>(null)
   const [spendingLoading, setSpendingLoading] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const [widgetFinancialData, setWidgetFinancialData] = useState<object | null>(null)
 
   async function loadData() {
     setLoading(true)
     try {
-      const [s, a, it, p] = await Promise.all([
+      // Compute start date 90 days ago for widget transactions
+      const d90 = new Date()
+      d90.setDate(d90.getDate() - 90)
+      const startDate = d90.toISOString().split("T")[0]
+
+      const [s, a, it, p, txnResult] = await Promise.all([
         api.getFinancialState() as Promise<FinancialState>,
         api.getAccounts() as Promise<Account[]>,
         api.getPlaidItems() as Promise<PlaidItem[]>,
         api.getPendingApprovals() as Promise<unknown[]>,
+        api.getRecentTransactions(startDate, 200).catch(() => ({ items: [] })),
       ])
+
       setState(s)
       const seen = new Set<string>()
-      setAccounts((a as Account[]).filter((acct) => {
+      const dedupedAccounts = (a as Account[]).filter((acct) => {
         if (seen.has(acct.plaid_account_id)) return false
         seen.add(acct.plaid_account_id)
         return true
-      }))
+      })
+      setAccounts(dedupedAccounts)
       setItems(it)
       setPendingCount(p.length)
+
+      // Assemble CASHPILOT_DATA from real API responses for widget injection
+      const income = (s as FinancialState).monthly_income_est ?? null
+      const expenses = (s as FinancialState).monthly_expenses_est ?? null
+      const txns = (txnResult as { items: Array<{ amount: number; merchant_name: string | null; category_primary: string | null; pending: boolean; posted_at: string }> }).items
+      const assembled = {
+        accounts: dedupedAccounts.map((acct) => ({
+          name: acct.official_name ?? acct.name,
+          type: acct.type,
+          subtype: acct.subtype,
+          current_balance: acct.current_balance,
+          available_balance: acct.available_balance,
+        })),
+        liquid_balance: (s as FinancialState).total_liquid_balance ?? null,
+        monthly_income: income,
+        monthly_expenses: expenses,
+        monthly_cash_flow: income != null && expenses != null ? +(income - expenses).toFixed(2) : null,
+        transactions: txns
+          .filter((t) => !t.pending)
+          .map((t) => ({
+            date: t.posted_at,
+            amount: t.amount,
+            name: t.merchant_name ?? "Unknown",
+            category: t.category_primary ?? "OTHER",
+          })),
+        paychecks: [],
+      }
+      console.log("[Dashboard] assembled CASHPILOT_DATA:", {
+        accounts: assembled.accounts.length,
+        transactions: assembled.transactions.length,
+        liquid_balance: assembled.liquid_balance,
+        monthly_income: assembled.monthly_income,
+      })
+      setWidgetFinancialData(assembled)
     } catch {
       // 401 handled in api-client (redirects to /login)
     } finally {
@@ -564,7 +607,7 @@ export default function DashboardPage() {
         {/* AI-generated widgets */}
         {hasAccounts && (
           <div className="mb-6">
-            <WidgetGrid />
+            <WidgetGrid financialData={widgetFinancialData} />
           </div>
         )}
 

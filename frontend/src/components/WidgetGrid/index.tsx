@@ -15,19 +15,20 @@ interface Widget {
   created_at: string
 }
 
-interface FinancialData {
-  accounts: Array<{ name: string; type: string; subtype: string | null; current_balance: number | null }>
-  liquid_balance: number | null
-  monthly_income: number | null
-  monthly_expenses: number | null
-  monthly_cash_flow: number | null
-  transactions: Array<{ date: string; amount: number; name: string; category: string }>
-  paychecks: Array<{ amount: number; source: string }>
-}
+// The financial data shape injected into every widget iframe as window.CASHPILOT_DATA
+type FinancialData = object | null
 
-function buildSrcdoc(code: string, data: FinancialData | null): string {
-  const payload = data ?? { accounts: [], liquid_balance: null, monthly_income: null, monthly_expenses: null, monthly_cash_flow: null, transactions: [], paychecks: [] }
-  // Escape </script> so the injected JSON doesn't terminate the script tag early
+function buildSrcdoc(code: string, data: FinancialData): string {
+  const payload = data ?? {
+    accounts: [],
+    liquid_balance: null,
+    monthly_income: null,
+    monthly_expenses: null,
+    monthly_cash_flow: null,
+    transactions: [],
+    paychecks: [],
+  }
+  // Escape </script> so the injected JSON doesn't close the script tag early
   const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, "<\\/script>")
   const dataScript = `<script>window.CASHPILOT_DATA=${safeJson};</script>`
 
@@ -46,7 +47,7 @@ function WidgetCard({
   onDelete,
 }: {
   widget: Widget
-  financialData: FinancialData | null
+  financialData: FinancialData
   onDelete: (id: string) => void
 }) {
   const [deleting, setDeleting] = useState(false)
@@ -86,7 +87,7 @@ function WidgetCard({
         </button>
       </div>
 
-      {/* Sandboxed iframe — allow-scripts only (no same-origin) */}
+      {/* Sandboxed iframe — allow-scripts only (no same-origin isolation) */}
       <iframe
         srcDoc={srcdoc}
         sandbox="allow-scripts"
@@ -99,51 +100,41 @@ function WidgetCard({
   )
 }
 
-const WidgetGrid = forwardRef<WidgetGridHandle, { className?: string }>(
-  function WidgetGrid({ className = "" }, ref) {
+interface WidgetGridProps {
+  className?: string
+  /** Financial data assembled by the parent from real API calls.
+   *  Injected as window.CASHPILOT_DATA into every widget iframe. */
+  financialData?: FinancialData
+}
+
+const WidgetGrid = forwardRef<WidgetGridHandle, WidgetGridProps>(
+  function WidgetGrid({ className = "", financialData = null }, ref) {
     const [widgets, setWidgets] = useState<Widget[]>([])
-    const [financialData, setFinancialData] = useState<FinancialData | null>(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
 
-    async function load() {
-      console.log("[WidgetGrid] load() called")
+    async function loadWidgets() {
+      console.log("[WidgetGrid] loadWidgets() called")
       setLoading(true)
       setError(null)
       try {
-        // Fetch widgets and financial data in parallel.
-        // Financial data failure is non-fatal — widgets still render (with empty data).
-        const [widgetResult, dataResult] = await Promise.allSettled([
-          api.getWidgets(),
-          api.getWidgetData(),
-        ])
-
-        if (widgetResult.status === "fulfilled") {
-          const w = widgetResult.value as Widget[]
-          console.log(`[WidgetGrid] fetched ${w.length} widgets:`, w.map((x) => x.title))
-          setWidgets(w)
-        } else {
-          console.error("[WidgetGrid] getWidgets() failed:", widgetResult.reason)
-          setError("Failed to load widgets")
-        }
-
-        if (dataResult.status === "fulfilled") {
-          console.log("[WidgetGrid] financial data fetched OK")
-          setFinancialData(dataResult.value as FinancialData)
-        } else {
-          console.warn("[WidgetGrid] getWidgetData() failed (non-fatal):", dataResult.reason)
-          // Keep financialData null — widgets render with empty CASHPILOT_DATA
-        }
+        const w = await api.getWidgets()
+        const list = w as Widget[]
+        console.log(`[WidgetGrid] fetched ${list.length} widgets:`, list.map((x) => x.title))
+        setWidgets(list)
+      } catch (err) {
+        console.error("[WidgetGrid] getWidgets() failed:", err)
+        setError("Failed to load widgets")
       } finally {
         setLoading(false)
       }
     }
 
-    useEffect(() => { load() }, [])
+    useEffect(() => { loadWidgets() }, [])
 
     useImperativeHandle(ref, () => ({
       addWidget(w: { id: string; title: string; component_code: string }) {
-        console.log("[WidgetGrid] addWidget() called:", w.title)
+        console.log("[WidgetGrid] addWidget():", w.title)
         setWidgets((prev) => [
           {
             id: w.id,
@@ -157,7 +148,7 @@ const WidgetGrid = forwardRef<WidgetGridHandle, { className?: string }>(
       },
       refresh() {
         console.log("[WidgetGrid] refresh() called")
-        load()
+        loadWidgets()
       },
     }))
 

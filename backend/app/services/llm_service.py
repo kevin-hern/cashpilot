@@ -300,16 +300,28 @@ class LLMService:
         action_words = {"build", "create", "make", "show me", "add", "generate"}
         return any(c in lower for c in chart_words) and any(a in lower for a in action_words)
 
-    def _generate_widget_code_sync(self, user_content: str) -> tuple[str, str] | None:
+    def _generate_widget_code_sync(self, user_content: str, financial_data: dict | None = None) -> tuple[str, str] | None:
         """Synchronous Anthropic call — always run via asyncio.to_thread. Returns (title, html) or None."""
         try:
+            # Build a compact data summary for Claude — trim transactions to 40 most recent
+            data_context = ""
+            if financial_data:
+                compact = dict(financial_data)
+                txns = compact.get("transactions", [])
+                compact["transactions"] = txns[:40]  # keep prompt size reasonable
+                data_context = (
+                    "\n\nUSER'S ACTUAL FINANCIAL DATA — use these real numbers as hardcoded fallbacks "
+                    "AND as context for what the widget should show:\n"
+                    f"```json\n{json.dumps(compact, indent=2)}\n```\n"
+                )
+
             response = self.client.messages.create(
                 model=settings.ANTHROPIC_MODEL,
                 max_tokens=4096,
                 system=WIDGET_SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
-                    "content": f"Build a financial dashboard widget for: {user_content}",
+                    "content": f"Build a financial dashboard widget for: {user_content}{data_context}",
                 }],
             )
             raw = response.content[0].text.strip()
@@ -390,7 +402,17 @@ class LLMService:
                 logger = logging.getLogger(__name__)
                 logger.info("[widget] Detected widget request, calling Claude for generation...")
 
-                result = await asyncio.to_thread(self._generate_widget_code_sync, user_content)
+                # Fetch real financial data BEFORE the thread so Claude can use actual numbers
+                try:
+                    widget_financial_data = await self.build_widget_data(user.id)
+                    logger.info(f"[widget] Built financial data for prompt: "
+                                f"{len(widget_financial_data.get('accounts', []))} accounts, "
+                                f"{len(widget_financial_data.get('transactions', []))} transactions")
+                except Exception as data_err:
+                    logger.warning(f"[widget] build_widget_data failed (non-fatal): {data_err}")
+                    widget_financial_data = None
+
+                result = await asyncio.to_thread(self._generate_widget_code_sync, user_content, widget_financial_data)
                 if result:
                     from app.models.widget_model import Widget
                     title, code = result

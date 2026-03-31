@@ -197,6 +197,22 @@ export const api = {
     }),
 
   // ── Spending ──────────────────────────────────────────────────────────────
+  // ── Transactions list ─────────────────────────────────────────────────────
+  getRecentTransactions: (startDate: string, limit = 200) =>
+    request<{
+      items: Array<{
+        id: string
+        amount: number
+        merchant_name: string | null
+        category_primary: string | null
+        pending: boolean
+        posted_at: string
+      }>
+      total: number
+      page: number
+      limit: number
+    }>(`/api/v1/transactions/?start_date=${startDate}&limit=${limit}`),
+
   // ── Widgets ───────────────────────────────────────────────────────────────
   getWidgets: () =>
     request<Array<{
