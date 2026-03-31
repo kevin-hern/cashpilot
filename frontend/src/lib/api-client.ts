@@ -13,7 +13,32 @@ function getToken(): string | null {
   return localStorage.getItem("access_token")
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null
+  return localStorage.getItem("refresh_token")
+}
+
+async function tryRefresh(): Promise<string | null> {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) return null
+  try {
+    const res = await fetch(`${BASE_URL}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    if (!res.ok) return null
+    const data = await res.json() as { access_token: string; refresh_token: string }
+    localStorage.setItem("access_token", data.access_token)
+    localStorage.setItem("refresh_token", data.refresh_token)
+    console.log("[CashPilot] Token refreshed successfully")
+    return data.access_token
+  } catch {
+    return null
+  }
+}
+
+async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
   const token = getToken()
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -25,8 +50,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   })
 
   if (res.status === 401) {
-    if (typeof window !== "undefined") {
+    if (retry && typeof window !== "undefined") {
+      // Try to refresh the access token once, then retry the request
+      const newToken = await tryRefresh()
+      if (newToken) {
+        return request<T>(path, options, false)
+      }
+      // Refresh failed — clear tokens and redirect to login
       localStorage.removeItem("access_token")
+      localStorage.removeItem("refresh_token")
       window.location.href = "/login"
     }
     throw new Error("Unauthorized")

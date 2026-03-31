@@ -18,7 +18,9 @@ export default function LoginPage() {
       const res = await api.login({ email, password }) as { access_token: string; refresh_token: string }
       localStorage.setItem("access_token", res.access_token)
       localStorage.setItem("refresh_token", res.refresh_token)
-      router.push("/dashboard")
+      console.log("[CashPilot] Token saved, navigating to dashboard")
+      // Hard navigation so dashboard always mounts fresh and reads the new token
+      window.location.href = "/dashboard"
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login failed")
     } finally {
