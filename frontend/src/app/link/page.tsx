@@ -20,7 +20,10 @@ export default function LinkPage() {
 
   function handleSuccess() {
     setStatus("success")
-    setTimeout(() => router.push("/dashboard"), 1200)
+    // Hard navigation so the dashboard remounts and re-fetches accounts.
+    // router.push() uses the Next.js router cache and may serve a stale
+    // dashboard that never calls loadData() again.
+    setTimeout(() => { window.location.href = "/dashboard" }, 1200)
   }
 
   if (status === "idle") return null

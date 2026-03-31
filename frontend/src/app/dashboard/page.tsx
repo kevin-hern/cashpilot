@@ -73,11 +73,12 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
-    if (!localStorage.getItem("access_token")) {
+    if (typeof window !== "undefined" && !localStorage.getItem("access_token")) {
       router.replace("/login")
       return
     }
     loadData()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function syncAll() {
