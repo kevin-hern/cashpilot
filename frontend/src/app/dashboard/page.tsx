@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const [pendingCount, setPendingCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [unlinking, setUnlinking] = useState<string | null>(null)
 
   async function loadData() {
     setLoading(true)
@@ -87,6 +88,19 @@ export default function DashboardPage() {
     loadData()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function unlinkItem(itemId: string) {
+    if (!confirm("Remove this bank connection? All associated accounts and transactions will be deleted.")) return
+    setUnlinking(itemId)
+    try {
+      await api.unlinkItem(itemId)
+      await loadData()
+    } catch {
+      // errors handled by api-client
+    } finally {
+      setUnlinking(null)
+    }
+  }
 
   async function syncAll() {
     if (items.length === 0) return
@@ -175,13 +189,21 @@ export default function DashboardPage() {
               <h2 className="text-base font-semibold text-zinc-900 dark:text-white">Accounts</h2>
               <div className="flex items-center gap-2">
                 {items.map((item) => (
-                  <span key={item.id} className="text-xs text-zinc-400">
+                  <span key={item.id} className="flex items-center gap-1.5 text-xs text-zinc-400">
                     {item.institution_name}
                     {item.last_synced_at && (
-                      <span className="ml-1 text-zinc-300 dark:text-zinc-600">
+                      <span className="text-zinc-300 dark:text-zinc-600">
                         · {new Date(item.last_synced_at).toLocaleDateString()}
                       </span>
                     )}
+                    <button
+                      onClick={() => unlinkItem(item.id)}
+                      disabled={unlinking === item.id}
+                      className="ml-1 text-red-400 hover:text-red-600 disabled:opacity-40 transition-colors"
+                      title="Remove bank connection"
+                    >
+                      {unlinking === item.id ? "Removing…" : "Remove"}
+                    </button>
                   </span>
                 ))}
                 <button

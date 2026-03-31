@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from fastapi import HTTPException
+from app.models.transaction_model import FinancialEvent
 import plaid
 from plaid.api import plaid_api
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
@@ -131,12 +132,60 @@ class PlaidService:
         item = result.scalar_one_or_none()
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
+
+        # Best-effort revocation with Plaid (don't fail if Plaid is down)
         try:
             access_token = _decrypt_token(item.access_token_enc)
-            self.client.item_remove(ItemRemoveRequest(access_token=access_token))
+            await asyncio.to_thread(
+                self.client.item_remove, ItemRemoveRequest(access_token=access_token)
+            )
         except Exception:
-            pass  # Best-effort revocation
-        item.status = "revoked"
+            pass
+
+        # Collect account IDs for this item
+        acct_result = await self.db.execute(
+            select(Account.id).where(Account.plaid_item_id == item_id)
+        )
+        account_ids = [r for r in acct_result.scalars().all()]
+
+        if account_ids:
+            # Collect transaction IDs for these accounts
+            txn_result = await self.db.execute(
+                select(Transaction.id).where(Transaction.account_id.in_(account_ids))
+            )
+            transaction_ids = [r for r in txn_result.scalars().all()]
+
+            if transaction_ids:
+                # Delete paychecks referencing these transactions
+                await self.db.execute(
+                    delete(Paycheck).where(Paycheck.transaction_id.in_(transaction_ids))
+                )
+                # Delete financial events referencing these transactions
+                await self.db.execute(
+                    delete(FinancialEvent).where(FinancialEvent.transaction_id.in_(transaction_ids))
+                )
+                # Delete transactions
+                await self.db.execute(
+                    delete(Transaction).where(Transaction.id.in_(transaction_ids))
+                )
+
+            # Delete financial events referencing these accounts (no transaction)
+            await self.db.execute(
+                delete(FinancialEvent).where(FinancialEvent.account_id.in_(account_ids))
+            )
+            # Delete account balances
+            await self.db.execute(
+                delete(AccountBalance).where(AccountBalance.account_id.in_(account_ids))
+            )
+            # Delete accounts
+            await self.db.execute(
+                delete(Account).where(Account.id.in_(account_ids))
+            )
+
+        # Delete the item itself
+        await self.db.execute(
+            delete(PlaidItem).where(PlaidItem.id == item_id)
+        )
 
     async def trigger_sync(self, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
         result = await self.db.execute(

@@ -105,6 +105,9 @@ export const api = {
   syncTransactions: (itemId: string) =>
     request(`/api/v1/plaid/sync/${itemId}`, { method: "POST" }),
 
+  unlinkItem: (itemId: string) =>
+    request(`/api/v1/plaid/items/${itemId}`, { method: "DELETE" }),
+
   reclassifyTransactions: () =>
     request<{
       reclassified: number
