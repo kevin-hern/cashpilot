@@ -55,14 +55,16 @@ function relativeTime(iso: string) {
 export default function ApprovalCard({ intent, onApprove, onReject }: Props) {
   const [acting, setActing] = useState<"approve" | "reject" | null>(null)
   const [localStatus, setLocalStatus] = useState(intent.status)
+  const [errorMsg, setErrorMsg] = useState("")
 
   async function handleApprove() {
     setActing("approve")
+    setErrorMsg("")
     try {
       await onApprove()
-      setLocalStatus("executed")
-    } catch {
-      // parent handles error display
+      setLocalStatus("approved")
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Approval failed")
     } finally {
       setActing(null)
     }
@@ -70,19 +72,19 @@ export default function ApprovalCard({ intent, onApprove, onReject }: Props) {
 
   async function handleReject() {
     setActing("reject")
+    setErrorMsg("")
     try {
       await onReject()
       setLocalStatus("rejected")
-    } catch {
-      // parent handles error display
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Dismiss failed")
     } finally {
       setActing(null)
     }
   }
 
   const isPending = localStatus === "pending_approval"
-  // Show approve/dismiss for all pending intents except pure informational alerts
-  const isActionable = isPending && intent.intent_type !== "alert"
+  const isActionable = isPending  // show Approve/Dismiss on every pending intent
   const statusCfg = STATUS_CONFIG[localStatus] ?? { label: localStatus, classes: "bg-zinc-100 text-zinc-500" }
 
   return (
@@ -124,6 +126,10 @@ export default function ApprovalCard({ intent, onApprove, onReject }: Props) {
             />
           </div>
         </div>
+      )}
+
+      {errorMsg && (
+        <p className="text-xs text-red-500 mb-2">{errorMsg}</p>
       )}
 
       {/* Footer: timestamp + actions */}
