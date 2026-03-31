@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import AsyncGenerator
 import anthropic
+import asyncio
 import json
 import hashlib
 import uuid
@@ -36,6 +37,68 @@ When generating financial recommendations, always output them in this JSON struc
   "confidence": 0.0-1.0
 }
 </intent>
+"""
+
+WIDGET_STREAM_ADDON = """
+The user is asking you to build a custom dashboard widget. Acknowledge that you're generating it (1-2 sentences max). Be specific about what it will visualize based on their request. Say "I'm building" since the widget is being generated now. Do NOT generate any code or HTML — just describe what you're making.
+"""
+
+WIDGET_SYSTEM_PROMPT = """You are a financial dashboard widget generator for CashPilot.
+
+Generate a self-contained HTML widget based on the user's request. The widget will run in a sandboxed iframe on a financial dashboard.
+
+## Data Available
+Financial data is injected as `window.CASHPILOT_DATA` before your script runs, with this structure:
+{
+  "accounts": [{"name": string, "type": string, "subtype": string, "current_balance": number, "available_balance": number}],
+  "liquid_balance": number | null,
+  "monthly_income": number | null,
+  "monthly_expenses": number | null,
+  "monthly_cash_flow": number | null,
+  "transactions": [{"date": "YYYY-MM-DD", "amount": number, "name": string, "category": string}],
+  "paychecks": [{"amount": number, "source": string}]
+}
+Note: transaction `amount` is positive = expense (money out), negative = income (money in).
+
+## Output Format
+Return ONLY a raw JSON object — no markdown, no code blocks, no explanation, no backticks:
+{"title": "Widget Title Here", "html": "<!DOCTYPE html>...complete HTML here..."}
+
+## HTML Requirements
+- Complete document starting with `<!DOCTYPE html>`
+- Load Chart.js ONLY from: `https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js`
+- All CSS must be inline in a `<style>` tag in `<head>`
+- `window.CASHPILOT_DATA` is guaranteed to exist when your DOMContentLoaded script runs
+- Always handle null/missing data gracefully (use defaults like 0)
+- Escape any forward slashes in the HTML when embedding in JSON (use \\/ instead of /)
+
+## Design System
+- Body/page background: #09090b
+- Card background: #18181b
+- Border color: #27272a
+- Primary text: #fafafa
+- Muted text: #a1a1aa
+- Blue accent: #3b82f6
+- Green: #10b981 (positive, income)
+- Red: #ef4444 (negative, expenses)
+- Yellow: #f59e0b (warnings)
+- Font: system-ui, -apple-system, sans-serif
+- Base font size: 13px, label size: 11px
+- Card padding: 16px, border-radius: 12px
+- Design for exactly 370px height, 100% width
+- No scrollbars — everything must fit in 370px
+
+## Required Script Boilerplate
+Always start your script block with:
+  Chart.defaults.color = '#a1a1aa';
+  Chart.defaults.borderColor = '#27272a';
+  Chart.defaults.font.family = "system-ui, -apple-system, sans-serif";
+  Chart.defaults.font.size = 11;
+  const fmtCurrency = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n??0);
+  const fmtDate = d => new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+Always wrap in:
+  document.addEventListener('DOMContentLoaded', () => { const data = window.CASHPILOT_DATA || {}; ... });
 """
 
 
@@ -86,7 +149,6 @@ class LLMService:
 
         lines: list[str] = ["## User Financial Context\n"]
 
-        # ── Accounts & balances ───────────────────────────────────────────────
         acct_result = await self.db.execute(
             select(Account).where(Account.user_id == user_id)
         )
@@ -111,7 +173,6 @@ class LLMService:
         else:
             lines.append("### Accounts\n- No accounts linked.")
 
-        # ── Financial state ───────────────────────────────────────────────────
         state_result = await self.db.execute(
             select(FinancialState).where(FinancialState.user_id == user_id)
         )
@@ -133,7 +194,6 @@ class LLMService:
         else:
             lines.append("- No financial summary available yet (sync transactions first).")
 
-        # ── Recent transactions (last 30 days) ────────────────────────────────
         cutoff = datetime.now(timezone.utc).date() - timedelta(days=30)
         txn_result = await self.db.execute(
             select(Transaction)
@@ -146,7 +206,7 @@ class LLMService:
         lines.append("\n### Recent Transactions (last 30 days)")
         if transactions:
             for txn in transactions:
-                sign = "-" if txn.amount > 0 else "+"  # Plaid: positive = debit
+                sign = "-" if txn.amount > 0 else "+"
                 amount = abs(float(txn.amount))
                 name = txn.merchant_name or txn.raw_name or "Unknown"
                 category = txn.category_primary or "uncategorized"
@@ -156,27 +216,153 @@ class LLMService:
 
         return "\n".join(lines)
 
+    async def build_widget_data(self, user_id: uuid.UUID) -> dict:
+        """Build the structured JSON blob injected into every widget iframe as window.CASHPILOT_DATA."""
+        from datetime import datetime, timedelta, timezone
+        from app.models.paycheck_model import Paycheck
+
+        acct_result = await self.db.execute(select(Account).where(Account.user_id == user_id))
+        accounts_out = []
+        for acct in acct_result.scalars().all():
+            bal_result = await self.db.execute(
+                select(AccountBalance)
+                .where(AccountBalance.account_id == acct.id)
+                .order_by(AccountBalance.snapshot_at.desc())
+                .limit(1)
+            )
+            bal = bal_result.scalar_one_or_none()
+            accounts_out.append({
+                "name": acct.official_name or acct.name,
+                "type": acct.type,
+                "subtype": acct.subtype,
+                "current_balance": float(bal.current) if bal and bal.current is not None else None,
+                "available_balance": float(bal.available) if bal and bal.available is not None else None,
+            })
+
+        state_result = await self.db.execute(
+            select(FinancialState).where(FinancialState.user_id == user_id)
+        )
+        state = state_result.scalar_one_or_none()
+        monthly_income = float(state.monthly_income_est) if state and state.monthly_income_est else None
+        monthly_expenses = float(state.monthly_expenses_est) if state and state.monthly_expenses_est else None
+        liquid_balance = float(state.total_liquid_balance) if state and state.total_liquid_balance else None
+
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=90)
+        txn_result = await self.db.execute(
+            select(Transaction).where(
+                Transaction.user_id == user_id,
+                Transaction.pending == False,
+                Transaction.posted_at >= cutoff,
+            ).order_by(Transaction.posted_at.desc()).limit(300)
+        )
+        transactions_out = [
+            {
+                "date": str(t.posted_at),
+                "amount": float(t.amount),
+                "name": t.merchant_name or t.raw_name or "Unknown",
+                "category": t.category_primary or "OTHER",
+            }
+            for t in txn_result.scalars().all()
+        ]
+
+        pc_result = await self.db.execute(
+            select(Paycheck)
+            .where(Paycheck.user_id == user_id)
+            .order_by(Paycheck.created_at.desc())
+            .limit(12)
+        )
+        paychecks_out = [
+            {"amount": float(p.amount), "source": p.source}
+            for p in pc_result.scalars().all()
+        ]
+
+        return {
+            "accounts": accounts_out,
+            "liquid_balance": liquid_balance,
+            "monthly_income": monthly_income,
+            "monthly_expenses": monthly_expenses,
+            "monthly_cash_flow": (
+                round(monthly_income - monthly_expenses, 2)
+                if monthly_income is not None and monthly_expenses is not None
+                else None
+            ),
+            "transactions": transactions_out,
+            "paychecks": paychecks_out,
+        }
+
+    # ── Widget generation ─────────────────────────────────────────────────────
+
+    def _is_widget_request(self, content: str) -> bool:
+        lower = content.lower()
+        if "widget" in lower:
+            return True
+        chart_words = {"chart", "graph", "visualization", "visualize", "plot"}
+        action_words = {"build", "create", "make", "show me", "add", "generate"}
+        return any(c in lower for c in chart_words) and any(a in lower for a in action_words)
+
+    def _generate_widget_code_sync(self, user_content: str) -> tuple[str, str] | None:
+        """Synchronous Anthropic call — always run via asyncio.to_thread. Returns (title, html) or None."""
+        try:
+            response = self.client.messages.create(
+                model=settings.ANTHROPIC_MODEL,
+                max_tokens=4096,
+                system=WIDGET_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": f"Build a financial dashboard widget for: {user_content}",
+                }],
+            )
+            raw = response.content[0].text.strip()
+
+            # Strip markdown code fences if present
+            if "```" in raw:
+                parts = raw.split("```")
+                for part in parts:
+                    candidate = part.strip()
+                    if candidate.startswith("json"):
+                        candidate = candidate[4:].strip()
+                    try:
+                        json.loads(candidate)
+                        raw = candidate
+                        break
+                    except Exception:
+                        continue
+
+            data = json.loads(raw)
+            title = str(data.get("title", "My Widget"))[:200]
+            html = data.get("html", "")
+            return (title, html) if html else None
+        except Exception:
+            return None
+
+    # ── Core streaming ────────────────────────────────────────────────────────
+
     async def stream_response(
         self, user: User, session: ChatSession, user_content: str
     ) -> AsyncGenerator[str, None]:
+        is_widget = self._is_widget_request(user_content)
+
         # Persist user message
         user_msg = ChatMessage(session_id=session.id, role="user", content=user_content)
         self.db.add(user_msg)
         await self.db.flush()
 
-        # Build message history (last 20 messages for context)
+        # Build message history (last 20 messages)
         history = await self.get_messages(user.id, session.id)
         messages = [{"role": m.role, "content": m.content} for m in history[-20:] if m.role != "system"]
 
-        # Inject financial context into system prompt
+        # Build system prompt
         financial_context = await self._build_financial_context(user.id)
         system_prompt = f"{BASE_SYSTEM_PROMPT}\n{financial_context}"
+        if is_widget:
+            system_prompt += f"\n{WIDGET_STREAM_ADDON}"
 
+        # Stream Claude text response first
         full_response = ""
         try:
             with self.client.messages.stream(
                 model=settings.ANTHROPIC_MODEL,
-                max_tokens=1024,
+                max_tokens=512 if is_widget else 1024,
                 system=system_prompt,
                 messages=messages,
             ) as stream:
@@ -188,7 +374,7 @@ class LLMService:
             yield f"data: {json.dumps({'delta': error_msg})}\n\n"
             full_response = error_msg
 
-        # Persist assistant message
+        # Persist assistant text message
         assistant_msg = ChatMessage(
             session_id=session.id,
             role="assistant",
@@ -196,6 +382,21 @@ class LLMService:
         )
         self.db.add(assistant_msg)
         await self.db.flush()
+
+        # After text stream: generate widget (async thread so we don't block event loop)
+        if is_widget:
+            try:
+                result = await asyncio.to_thread(self._generate_widget_code_sync, user_content)
+                if result:
+                    from app.models.widget_model import Widget
+                    title, code = result
+                    widget = Widget(user_id=user.id, title=title, component_code=code)
+                    self.db.add(widget)
+                    await self.db.flush()
+                    yield f"data: {json.dumps({'type': 'widget', 'id': str(widget.id), 'title': title, 'code': code})}\n\n"
+            except Exception:
+                pass  # Non-fatal — text response already delivered
+
         yield "data: [DONE]\n\n"
 
     async def generate_intent_explanation(self, context: dict) -> dict:

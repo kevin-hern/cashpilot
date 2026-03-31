@@ -6,6 +6,7 @@ from app.models.intent_model import Intent, ApprovalAction, Execution
 from app.models.audit_model import AuditLog
 from app.models.chat_model import ChatSession, ChatMessage
 from app.models.paycheck_model import Paycheck
+from app.models.widget_model import Widget
 
 __all__ = [
     "User",
@@ -15,4 +16,5 @@ __all__ = [
     "AuditLog",
     "ChatSession", "ChatMessage",
     "Paycheck",
+    "Widget",
 ]

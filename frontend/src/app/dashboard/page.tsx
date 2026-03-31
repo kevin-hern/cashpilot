@@ -5,6 +5,7 @@ import Link from "next/link"
 import { api } from "@/lib/api-client"
 import PlaidLinkButton from "@/components/PlaidLink"
 import SpendingChart from "@/components/SpendingChart"
+import WidgetGrid from "@/components/WidgetGrid"
 
 interface FinancialState {
   total_liquid_balance: number
@@ -557,6 +558,13 @@ export default function DashboardPage() {
         {hasAccounts && (
           <div className="mb-6">
             <SpendingChart />
+          </div>
+        )}
+
+        {/* AI-generated widgets */}
+        {hasAccounts && (
+          <div className="mb-6">
+            <WidgetGrid />
           </div>
         )}
 

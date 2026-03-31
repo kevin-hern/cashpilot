@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { api, streamChat } from "@/lib/api-client"
+import { api, streamChat, WidgetEvent } from "@/lib/api-client"
 
 interface Message {
   role: "user" | "assistant"
   content: string
+  widget?: WidgetEvent
 }
 
 interface Intent {
@@ -66,7 +67,6 @@ function IntentCard({ data }: { data: Intent }) {
   const icon = INTENT_ICONS[data.type] ?? "💡"
   const confidencePct = Math.round((data.confidence ?? 0) * 100)
 
-  // Save as pending_approval as soon as the card renders (once only)
   useEffect(() => {
     if (created.current) return
     created.current = true
@@ -87,7 +87,6 @@ function IntentCard({ data }: { data: Intent }) {
       if (intentId) {
         await api.approveIntent(intentId, crypto.randomUUID())
       } else {
-        // Fallback: create-and-approve in one shot if pending save failed
         await api.approveChatIntent({
           intent_type: data.type,
           title: data.title,
@@ -151,8 +150,44 @@ function IntentCard({ data }: { data: Intent }) {
   )
 }
 
-function AssistantContent({ content, streaming }: { content: string; streaming: boolean }) {
-  if (!content) {
+function WidgetPreview({ widget }: { widget: WidgetEvent }) {
+  const safeJson = JSON.stringify({}).replace(/<\/script>/gi, "<\\/script>")
+  // Inject empty data — real data comes from the dashboard. This is just a preview.
+  const dataScript = `<script>window.CASHPILOT_DATA=${safeJson};<\/script>`
+  const srcdoc = widget.code.includes("</head>")
+    ? widget.code.replace("</head>", `${dataScript}</head>`)
+    : dataScript + widget.code
+
+  return (
+    <div className="mt-3 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
+        <div className="flex items-center gap-2">
+          <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">{widget.title}</span>
+        </div>
+        <Link
+          href="/dashboard"
+          className="text-xs text-blue-500 hover:text-blue-600 transition-colors"
+        >
+          View on dashboard →
+        </Link>
+      </div>
+      <iframe
+        srcDoc={srcdoc}
+        sandbox="allow-scripts"
+        scrolling="no"
+        className="w-full border-0"
+        style={{ height: 280, display: "block" }}
+        title={widget.title}
+      />
+    </div>
+  )
+}
+
+function AssistantContent({ content, streaming, widget }: { content: string; streaming: boolean; widget?: WidgetEvent }) {
+  if (!content && !widget) {
     return streaming ? <span className="animate-pulse text-zinc-400">…</span> : null
   }
 
@@ -160,14 +195,10 @@ function AssistantContent({ content, streaming }: { content: string; streaming: 
 
   return (
     <div className="space-y-1">
+      {!content && streaming && <span className="animate-pulse text-zinc-400">…</span>}
       {segments.map((seg, i) => {
         if (seg.kind === "intent") {
-          return (
-            <IntentCard
-              key={i}
-              data={seg.data}
-            />
-          )
+          return <IntentCard key={i} data={seg.data} />
         }
         return (
           <div key={i} className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-table:text-xs">
@@ -177,6 +208,7 @@ function AssistantContent({ content, streaming }: { content: string; streaming: 
           </div>
         )
       })}
+      {widget && <WidgetPreview widget={widget} />}
     </div>
   )
 }
@@ -214,13 +246,24 @@ export default function ChatPage() {
         setMessages((prev) => {
           const updated = [...prev]
           updated[updated.length - 1] = {
-            role: "assistant",
+            ...updated[updated.length - 1],
             content: updated[updated.length - 1].content + delta,
           }
           return updated
         })
       },
       () => setStreaming(false),
+      (widgetEvent) => {
+        // Attach widget to the last assistant message
+        setMessages((prev) => {
+          const updated = [...prev]
+          updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
+            widget: widgetEvent,
+          }
+          return updated
+        })
+      },
     )
   }
 
@@ -237,7 +280,7 @@ export default function ChatPage() {
         {messages.length === 0 && (
           <div className="text-center text-zinc-500 mt-16">
             <p className="text-lg font-medium mb-2">Ask me anything about your finances</p>
-            <p className="text-sm">Try: "How much did I spend last month?" or "Should I move money to savings?"</p>
+            <p className="text-sm">Try: "How much did I spend last month?" or "Build me a spending chart widget"</p>
           </div>
         )}
         {messages.map((msg, i) => (
@@ -251,6 +294,7 @@ export default function ChatPage() {
                 <AssistantContent
                   content={msg.content}
                   streaming={streaming && i === messages.length - 1}
+                  widget={msg.widget}
                 />
               </div>
             )}
@@ -266,7 +310,7 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
-            placeholder="Ask about your finances…"
+            placeholder="Ask about your finances or say 'build me a widget'…"
             disabled={streaming || !sessionId}
             className="flex-1 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-4 py-2 text-sm text-zinc-900 dark:text-white outline-none focus:ring-2 focus:ring-zinc-500 disabled:opacity-50"
           />

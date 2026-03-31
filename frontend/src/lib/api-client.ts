@@ -197,6 +197,31 @@ export const api = {
     }),
 
   // ── Spending ──────────────────────────────────────────────────────────────
+  // ── Widgets ───────────────────────────────────────────────────────────────
+  getWidgets: () =>
+    request<Array<{
+      id: string
+      title: string
+      description: string | null
+      component_code: string
+      created_at: string
+      updated_at: string
+    }>>("/api/v1/widgets"),
+
+  getWidgetData: () =>
+    request<{
+      accounts: Array<{ name: string; type: string; subtype: string | null; current_balance: number | null; available_balance: number | null }>
+      liquid_balance: number | null
+      monthly_income: number | null
+      monthly_expenses: number | null
+      monthly_cash_flow: number | null
+      transactions: Array<{ date: string; amount: number; name: string; category: string }>
+      paychecks: Array<{ amount: number; source: string }>
+    }>("/api/v1/widgets/data"),
+
+  deleteWidget: (id: string) =>
+    request(`/api/v1/widgets/${id}`, { method: "DELETE" }),
+
   getSpendingOverTime: (granularity: string, year: number) =>
     request<{
       granularity: string
@@ -235,11 +260,19 @@ export const api = {
     request(`/api/v1/chat/sessions/${sessionId}/messages`),
 }
 
+export interface WidgetEvent {
+  type: "widget"
+  id: string
+  title: string
+  code: string
+}
+
 export function streamChat(
   sessionId: string,
   content: string,
   onDelta: (text: string) => void,
   onDone: () => void,
+  onWidget?: (w: WidgetEvent) => void,
 ) {
   const token = getToken()
   fetch(`${BASE_URL}/api/v1/chat/sessions/${sessionId}/messages`, {
@@ -262,8 +295,12 @@ export function streamChat(
         const data = line.slice(6).trim()
         if (data === "[DONE]") { onDone(); return }
         try {
-          const { delta } = JSON.parse(data) as { delta: string }
-          onDelta(delta)
+          const parsed = JSON.parse(data) as { delta?: string; type?: string; id?: string; title?: string; code?: string }
+          if (parsed.type === "widget" && onWidget) {
+            onWidget(parsed as WidgetEvent)
+          } else if (parsed.delta !== undefined) {
+            onDelta(parsed.delta)
+          }
         } catch {}
       }
     }
