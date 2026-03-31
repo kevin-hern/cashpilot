@@ -62,7 +62,13 @@ export default function DashboardPage() {
         api.getPendingApprovals() as Promise<unknown[]>,
       ])
       setState(s)
-      setAccounts(a)
+      // Deduplicate by id in case the backend returns duplicate account rows
+      const seen = new Set<string>()
+      setAccounts(a.filter((acct) => {
+        if (seen.has(acct.id)) return false
+        seen.add(acct.id)
+        return true
+      }))
       setItems(it)
       setPendingCount(p.length)
     } catch {

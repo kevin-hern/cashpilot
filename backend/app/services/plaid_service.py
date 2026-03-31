@@ -21,6 +21,7 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 import os
+import asyncio
 from datetime import timezone
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import uuid
@@ -84,7 +85,7 @@ class PlaidService:
         if settings.PLAID_WEBHOOK_URL and settings.PLAID_WEBHOOK_URL.startswith("https://"):
             kwargs["webhook"] = settings.PLAID_WEBHOOK_URL
         request = LinkTokenCreateRequest(**kwargs)
-        response = self.client.link_token_create(request)
+        response = await asyncio.to_thread(self.client.link_token_create, request)
         # v38: response is an object with dot-notation attributes
         # expiration is datetime — convert to ISO string
         expiration = response.expiration
@@ -94,8 +95,9 @@ class PlaidService:
         )
 
     async def exchange_public_token(self, user: User, body: ExchangeRequest) -> ExchangeResponse:
-        exchange_resp = self.client.item_public_token_exchange(
-            ItemPublicTokenExchangeRequest(public_token=body.public_token)
+        exchange_resp = await asyncio.to_thread(
+            self.client.item_public_token_exchange,
+            ItemPublicTokenExchangeRequest(public_token=body.public_token),
         )
         # v38: dot notation
         access_token = exchange_resp.access_token
@@ -145,8 +147,12 @@ class PlaidService:
 
         access_token = _decrypt_token(item.access_token_enc)
 
-        # Fetch accounts to build plaid_account_id → internal UUID map
-        accounts_resp = self.client.accounts_get(AccountsGetRequest(access_token=access_token))
+        # Fetch accounts to build plaid_account_id → internal UUID map.
+        # Run the synchronous Plaid SDK call in a thread so it doesn't block
+        # the async event loop (prevents Railway from timing out the connection).
+        accounts_resp = await asyncio.to_thread(
+            self.client.accounts_get, AccountsGetRequest(access_token=access_token)
+        )
         acct_result = await self.db.execute(
             select(Account).where(Account.plaid_item_id == item.id)
         )
@@ -164,14 +170,17 @@ class PlaidService:
                 )
                 self.db.add(balance)
 
-        # Page through transactions/sync cursor
+        # Page through transactions/sync cursor (each page is a blocking call —
+        # run in thread to keep the async event loop free).
         cursor = item.cursor
         added: list[dict] = []
         while True:
             kwargs: dict = dict(access_token=access_token)
             if cursor:
                 kwargs["cursor"] = cursor
-            resp = self.client.transactions_sync(TransactionsSyncRequest(**kwargs))
+            resp = await asyncio.to_thread(
+                self.client.transactions_sync, TransactionsSyncRequest(**kwargs)
+            )
             for t in resp.added:
                 added.append({
                     "transaction_id": t.transaction_id,
@@ -366,17 +375,23 @@ class PlaidService:
         resp = self.client.accounts_get(AccountsGetRequest(access_token=access_token))
         # v38: resp.accounts is a list of AccountBase objects with dot notation
         for acct in resp.accounts:
-            account = Account(
-                user_id=item.user_id,
-                plaid_item_id=item.id,
-                plaid_account_id=acct.account_id,
-                name=acct.name,
-                official_name=getattr(acct, "official_name", None),
-                type=str(acct.type),
-                subtype=str(acct.subtype) if acct.subtype else None,
+            # Upsert — avoid duplicate rows if exchange_public_token is called again
+            existing = await self.db.execute(
+                select(Account).where(Account.plaid_account_id == acct.account_id)
             )
-            self.db.add(account)
-            await self.db.flush()
+            account = existing.scalar_one_or_none()
+            if account is None:
+                account = Account(
+                    user_id=item.user_id,
+                    plaid_item_id=item.id,
+                    plaid_account_id=acct.account_id,
+                    name=acct.name,
+                    official_name=getattr(acct, "official_name", None),
+                    type=str(acct.type),
+                    subtype=str(acct.subtype) if acct.subtype else None,
+                )
+                self.db.add(account)
+                await self.db.flush()
             balances = acct.balances
             balance = AccountBalance(
                 account_id=account.id,
