@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import date
+from sqlalchemy import func, extract
+from pydantic import BaseModel
+from typing import Any
 
 from app.db.database import get_db
 from app.schemas.transaction_schema import (
@@ -16,6 +19,29 @@ from app.models.plaid_model import Account, AccountBalance
 from app.models.paycheck_model import Paycheck
 from app.dependencies import get_current_user
 from app.models.user_model import User
+
+
+class TransactionSummary(BaseModel):
+    id: str
+    raw_name: str | None
+    merchant_name: str | None
+    amount: float
+    posted_at: str
+
+class CategoryBreakdown(BaseModel):
+    category: str
+    total: float
+    count: int
+    percentage: float
+    prev_month_total: float | None
+    top_transactions: list[TransactionSummary]
+
+class SpendingBreakdownResponse(BaseModel):
+    month: int
+    year: int
+    total_spending: float
+    categories: list[CategoryBreakdown]
+
 
 router = APIRouter()
 
@@ -46,6 +72,104 @@ async def get_financial_state(
 ):
     svc = IngestionService(db)
     return await svc.get_financial_state(current_user.id)
+
+
+@router.get("/categories", response_model=SpendingBreakdownResponse)
+async def get_spending_by_category(
+    month: int = Query(None, ge=1, le=12),
+    year: int = Query(None, ge=2020, le=2100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime, date as date_type
+    import calendar
+
+    now = datetime.utcnow()
+    if month is None:
+        month = now.month
+    if year is None:
+        year = now.year
+
+    # Date range for selected month
+    first_day = date_type(year, month, 1)
+    last_day = date_type(year, month, calendar.monthrange(year, month)[1])
+
+    # Previous month
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
+    prev_first = date_type(prev_year, prev_month, 1)
+    prev_last = date_type(prev_year, prev_month, calendar.monthrange(prev_year, prev_month)[1])
+
+    # Fetch expense transactions for selected month (amount > 0, not INCOME, not pending)
+    txn_result = await db.execute(
+        select(Transaction).where(
+            Transaction.user_id == current_user.id,
+            Transaction.pending == False,
+            Transaction.amount > 0,
+            Transaction.category_primary != "INCOME",
+            Transaction.posted_at >= first_day,
+            Transaction.posted_at <= last_day,
+        )
+    )
+    txns = txn_result.scalars().all()
+
+    # Fetch previous month expenses for comparison
+    prev_result = await db.execute(
+        select(Transaction).where(
+            Transaction.user_id == current_user.id,
+            Transaction.pending == False,
+            Transaction.amount > 0,
+            Transaction.category_primary != "INCOME",
+            Transaction.posted_at >= prev_first,
+            Transaction.posted_at <= prev_last,
+        )
+    )
+    prev_txns = prev_result.scalars().all()
+
+    # Group by category
+    from collections import defaultdict
+    cat_txns: dict[str, list] = defaultdict(list)
+    for t in txns:
+        cat = t.category_primary or "OTHER"
+        cat_txns[cat].append(t)
+
+    prev_cat_totals: dict[str, float] = defaultdict(float)
+    for t in prev_txns:
+        cat = t.category_primary or "OTHER"
+        prev_cat_totals[cat] += float(t.amount)
+
+    total_spending = sum(float(t.amount) for t in txns)
+
+    categories: list[CategoryBreakdown] = []
+    for cat, cat_list in sorted(cat_txns.items(), key=lambda x: -sum(float(t.amount) for t in x[1])):
+        cat_total = sum(float(t.amount) for t in cat_list)
+        top5 = sorted(cat_list, key=lambda t: -float(t.amount))[:5]
+        categories.append(CategoryBreakdown(
+            category=cat,
+            total=round(cat_total, 2),
+            count=len(cat_list),
+            percentage=round((cat_total / total_spending * 100) if total_spending > 0 else 0, 1),
+            prev_month_total=round(prev_cat_totals[cat], 2) if cat in prev_cat_totals else None,
+            top_transactions=[
+                TransactionSummary(
+                    id=str(t.id),
+                    raw_name=t.raw_name,
+                    merchant_name=t.merchant_name,
+                    amount=round(float(t.amount), 2),
+                    posted_at=str(t.posted_at),
+                )
+                for t in top5
+            ],
+        ))
+
+    return SpendingBreakdownResponse(
+        month=month,
+        year=year,
+        total_spending=round(total_spending, 2),
+        categories=categories,
+    )
 
 
 @router.post("/reclassify")

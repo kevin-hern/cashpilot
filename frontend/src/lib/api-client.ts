@@ -196,6 +196,28 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
+  // ── Spending ──────────────────────────────────────────────────────────────
+  getSpendingBreakdown: (month: number, year: number) =>
+    request<{
+      month: number
+      year: number
+      total_spending: number
+      categories: Array<{
+        category: string
+        total: number
+        count: number
+        percentage: number
+        prev_month_total: number | null
+        top_transactions: Array<{
+          id: string
+          raw_name: string | null
+          merchant_name: string | null
+          amount: number
+          posted_at: string
+        }>
+      }>
+    }>(`/api/v1/transactions/categories?month=${month}&year=${year}`),
+
   // ── Chat ──────────────────────────────────────────────────────────────────
   createChatSession: () =>
     request<{ id: string }>("/api/v1/chat/sessions", { method: "POST" }),

@@ -134,6 +134,7 @@ export default function DashboardPage() {
                 </span>
               )}
             </Link>
+            <Link href="/spending" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Spending</Link>
             <Link href="/chat" className="hover:text-zinc-900 dark:hover:text-white transition-colors">Chat</Link>
           </nav>
         </div>
@@ -262,7 +263,13 @@ export default function DashboardPage() {
               href="/approvals"
               className="flex-1 text-center rounded-full border border-zinc-200 dark:border-zinc-700 py-2.5 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
             >
-              Review Approvals
+              Approvals
+            </Link>
+            <Link
+              href="/spending"
+              className="flex-1 text-center rounded-full border border-zinc-200 dark:border-zinc-700 py-2.5 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            >
+              Spending
             </Link>
             <Link
               href="/chat"
