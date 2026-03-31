@@ -14,4 +14,4 @@ COPY backend/ .
 
 EXPOSE 8000
 # Use $PORT injected by Railway; fall back to 8000 for local docker run
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
